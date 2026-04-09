@@ -1,0 +1,23 @@
+# Runtime / local data
+catalog.db
+*.sqlite
+*.sqlite3
+*.db
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Node / tooling
+node_modules/
+playwright-report/
+
+# Generated screenshots / temp
+dashboard-*.png
+.firecrawl/
+
+# Workspace-local datasets kept outside the repo by default
+../data/

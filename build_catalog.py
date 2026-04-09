@@ -1,0 +1,325 @@
+#!/usr/bin/env python3
+import ast
+import csv
+import json
+import re
+import sqlite3
+import sys
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+WORKSPACE = ROOT.parent
+DB_PATH = ROOT / 'catalog.db'
+
+SHEIN_KAGGLE = WORKSPACE / 'data' / 'shein-kaggle-111k.csv'
+ZARA_URL = 'https://raw.githubusercontent.com/mehdiben1/Zara-Sales-analysis/main/Data.csv'
+SHEIN_SAMPLE_URL = 'https://raw.githubusercontent.com/luminati-io/Shein-dataset-samples/main/shein-products.csv'
+
+
+def fetch_text(url: str) -> str:
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    with urllib.request.urlopen(req, timeout=60) as response:
+        return response.read().decode('utf-8', errors='replace')
+
+
+def parse_jsonish_list(value):
+    if not value or value == 'null':
+        return []
+    try:
+        return json.loads(value)
+    except Exception:
+        try:
+            normalized = value.replace('None', 'null').replace('True', 'true').replace('False', 'false')
+            return json.loads(normalized)
+        except Exception:
+            return []
+
+
+def parse_python_list(value):
+    if not value or value == 'null':
+        return []
+    try:
+        parsed = ast.literal_eval(value)
+        return parsed if isinstance(parsed, list) else []
+    except Exception:
+        return []
+
+
+def number_from_text(value):
+    if value is None:
+        return None
+    cleaned = re.sub(r'[^0-9.\-]+', '', str(value))
+    if not cleaned:
+        return None
+    try:
+        return float(cleaned)
+    except Exception:
+        return None
+
+
+def split_sizes(value):
+    if not value:
+        return []
+    return [part.strip() for part in str(value).split(',') if part.strip()]
+
+
+def infer_category_from_name(name, url=''):
+    text = f'{name} {url}'.lower()
+    rules = [
+        ('Dresses', ['dress', 'gown']),
+        ('Skirts', ['skirt']),
+        ('Shorts', ['shorts', 'short ']),
+        ('Jeans', ['jean']),
+        ('Pants', ['pants', 'trousers', 'legging', 'jogger']),
+        ('Swimwear', ['swimsuit', 'bikini', 'swim']),
+        ('Lingerie', ['bra', 'panty', 'lingerie', 'sleepwear', 'nightgown']),
+        ('Tops', ['top', 'tee', 't-shirt', 'shirt', 'blouse', 'cami', 'tank']),
+        ('Outerwear', ['jacket', 'coat', 'hoodie', 'sweatshirt', 'blazer', 'cardigan']),
+        ('Shoes', ['shoe', 'sneaker', 'heel', 'boot', 'sandal', 'loafer']),
+        ('Bags', ['bag', 'backpack', 'purse', 'wallet']),
+        ('Jewelry', ['necklace', 'ring', 'bracelet', 'earring']),
+        ('Accessories', ['accessory', 'belt', 'hat', 'scarf', 'cap', 'mask', 'covering chain']),
+        ('Beauty', ['lipstick', 'eyeliner', 'mascara', 'beauty', 'makeup']),
+        ('Home', ['storage cabinet', 'cabinet', 'pantry', 'furniture', 'decor', 'crystal', 'kitchen', 'bathroom']),
+    ]
+    for label, keywords in rules:
+        if any(keyword in text for keyword in keywords):
+            return label
+    match = re.search(r'-cat-(\d+)\.html', url)
+    if match:
+        return f'cat-{match.group(1)}'
+    return 'Other'
+
+
+def shein_kaggle_rows(path: Path):
+    with path.open(newline='', encoding='utf-8', errors='replace') as handle:
+        reader = csv.DictReader(handle, delimiter=';')
+        for index, row in enumerate(reader, start=1):
+            images = [img for img in parse_python_list(row.get('images')) if isinstance(img, str) and img.strip()]
+            attrs_list = parse_python_list(row.get('description'))
+            attr_pairs = []
+            for item in attrs_list:
+                if isinstance(item, dict):
+                    attr_pairs.extend((str(k), str(v)) for k, v in item.items())
+            color = next((v for k, v in attr_pairs if k.lower() == 'color'), '')
+            name = (row.get('name') or '').strip()
+            category = infer_category_from_name(name, row.get('url') or '')
+            description = ' • '.join(f'{k}: {v}' for k, v in attr_pairs)
+            sku = (row.get('sku') or '').replace('SKU:', '').strip()
+            size_text = (row.get('size') or '').strip()
+            yield {
+                'dataset_id': 'sheinKaggle',
+                'id': sku or f'shein-kaggle-{index}',
+                'name': name or 'Sans nom',
+                'description': description,
+                'category': category,
+                'category_path': '',
+                'price': number_from_text(row.get('price')),
+                'price_text': (row.get('price') or '').strip() or 'Prix non disponible',
+                'rating': None,
+                'reviews_count': None,
+                'brand': (row.get('brand') or '').strip() or 'SHEIN',
+                'color': color,
+                'size_text': size_text,
+                'sizes_json': json.dumps(split_sizes(size_text), ensure_ascii=False),
+                'image': images[0] if images else '',
+                'image_urls_json': json.dumps(images, ensure_ascii=False),
+                'image_count': len(images),
+                'url': (row.get('url') or '').strip(),
+                'source': 'Shein Kaggle',
+                'search_text': ' '.join(filter(None, [name, description, category, color, size_text, row.get('brand', ''), row.get('url', '')])).lower(),
+            }
+
+
+def shein_sample_rows(text: str):
+    reader = csv.DictReader(text.splitlines())
+    for index, row in enumerate(reader, start=1):
+        images = [img for img in parse_jsonish_list(row.get('image_urls')) if isinstance(img, str) and img.strip()]
+        sizes = [size for size in parse_jsonish_list(row.get('all_available_sizes')) if isinstance(size, str) and size.strip()]
+        attrs = parse_jsonish_list(row.get('other_attributes'))
+        color = (row.get('color') or '').strip()
+        search_parts = [
+            row.get('product_name', ''), row.get('description', ''), row.get('category', ''),
+            row.get('root_category', ''), color, row.get('size', ''), row.get('brand', ''), row.get('url', ''), *sizes,
+        ]
+        for item in attrs:
+            if isinstance(item, dict):
+                search_parts.extend([str(item.get('name', '')), str(item.get('value', ''))])
+        yield {
+            'dataset_id': 'shein',
+            'id': (row.get('product_id') or row.get('model_number') or f'shein-{index}').strip(),
+            'name': (row.get('product_name') or '').strip() or 'Sans nom',
+            'description': (row.get('description') or '').strip(),
+            'category': (row.get('category') or row.get('root_category') or '').strip() or 'Other',
+            'category_path': '',
+            'price': number_from_text(row.get('final_price')),
+            'price_text': f"{row.get('final_price', '').strip()} {row.get('currency', '').strip()}".strip() or 'Prix non disponible',
+            'rating': number_from_text(row.get('rating')),
+            'reviews_count': int(number_from_text(row.get('reviews_count')) or 0) or None,
+            'brand': (row.get('brand') or '').strip() or 'SHEIN',
+            'color': color,
+            'size_text': (row.get('size') or '').strip(),
+            'sizes_json': json.dumps(sizes, ensure_ascii=False),
+            'image': (row.get('main_image') or '').strip() or (images[0] if images else ''),
+            'image_urls_json': json.dumps(images, ensure_ascii=False),
+            'image_count': int(number_from_text(row.get('image_count')) or len(images)),
+            'url': (row.get('url') or '').strip(),
+            'source': 'Shein',
+            'search_text': ' '.join(filter(None, search_parts)).lower(),
+        }
+
+
+def zara_rows(text: str):
+    reader = csv.DictReader(text.splitlines(), delimiter=';')
+    for index, row in enumerate(reader, start=1):
+        name = (row.get('name') or '').strip()
+        category = (row.get('Product Category') or row.get('terms') or row.get('section') or '').strip() or 'Other'
+        description = (row.get('description') or '').strip()
+        sku = (row.get('sku') or '').strip()
+        search_text = ' '.join(filter(None, [name, description, row.get('brand', ''), row.get('section', ''), row.get('terms', ''), sku, category])).lower()
+        yield {
+            'dataset_id': 'zara',
+            'id': (row.get('Product ID') or sku or f'zara-{index}').strip(),
+            'name': name or 'Sans nom',
+            'description': description,
+            'category': category,
+            'category_path': ' › '.join([part for part in [row.get('section'), row.get('terms')] if part]),
+            'price': number_from_text(row.get('price')),
+            'price_text': f"{row.get('price', '').strip()} {row.get('currency', '').strip()}".strip() or 'Prix non disponible',
+            'rating': None,
+            'reviews_count': None,
+            'brand': (row.get('brand') or '').strip() or 'Zara',
+            'color': '',
+            'size_text': '',
+            'sizes_json': json.dumps([], ensure_ascii=False),
+            'image': '',
+            'image_urls_json': json.dumps([], ensure_ascii=False),
+            'image_count': 0,
+            'url': (row.get('url') or '').strip(),
+            'source': 'Zara',
+            'search_text': search_text,
+        }
+
+
+def rebuild_db():
+    if DB_PATH.exists():
+        DB_PATH.unlink()
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute('PRAGMA journal_mode=WAL')
+    conn.execute('PRAGMA synchronous=NORMAL')
+    conn.execute(
+        '''
+        CREATE TABLE products (
+            dataset_id TEXT NOT NULL,
+            id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT,
+            category TEXT,
+            category_path TEXT,
+            price REAL,
+            price_text TEXT,
+            rating REAL,
+            reviews_count INTEGER,
+            brand TEXT,
+            color TEXT,
+            size_text TEXT,
+            sizes_json TEXT,
+            image TEXT,
+            image_urls_json TEXT,
+            image_count INTEGER,
+            url TEXT,
+            source TEXT,
+            search_text TEXT
+        )
+        '''
+    )
+    conn.execute(
+        '''
+        CREATE TABLE datasets (
+            id TEXT PRIMARY KEY,
+            label TEXT NOT NULL,
+            source TEXT NOT NULL,
+            total_count INTEGER NOT NULL,
+            with_images_count INTEGER NOT NULL,
+            with_reviews_count INTEGER NOT NULL
+        )
+        '''
+    )
+
+    def insert_many(rows):
+        conn.executemany(
+            '''
+            INSERT INTO products (
+              dataset_id, id, name, description, category, category_path, price, price_text,
+              rating, reviews_count, brand, color, size_text, sizes_json, image,
+              image_urls_json, image_count, url, source, search_text
+            ) VALUES (
+              :dataset_id, :id, :name, :description, :category, :category_path, :price, :price_text,
+              :rating, :reviews_count, :brand, :color, :size_text, :sizes_json, :image,
+              :image_urls_json, :image_count, :url, :source, :search_text
+            )
+            ''',
+            rows,
+        )
+        conn.commit()
+
+    print('Importing sheinKaggle…', file=sys.stderr)
+    if not SHEIN_KAGGLE.exists():
+        raise SystemExit(f'Missing local dataset: {SHEIN_KAGGLE}')
+    batch = []
+    for row in shein_kaggle_rows(SHEIN_KAGGLE):
+        batch.append(row)
+        if len(batch) >= 1000:
+            insert_many(batch)
+            batch.clear()
+    if batch:
+        insert_many(batch)
+
+    print('Importing shein sample…', file=sys.stderr)
+    try:
+        insert_many(list(shein_sample_rows(fetch_text(SHEIN_SAMPLE_URL))))
+    except Exception as exc:
+        print(f'Warning: shein sample import skipped: {exc}', file=sys.stderr)
+
+    print('Importing zara sample…', file=sys.stderr)
+    try:
+        insert_many(list(zara_rows(fetch_text(ZARA_URL))))
+    except Exception as exc:
+        print(f'Warning: zara import skipped: {exc}', file=sys.stderr)
+
+    conn.execute('CREATE INDEX idx_products_dataset ON products(dataset_id)')
+    conn.execute('CREATE INDEX idx_products_dataset_category ON products(dataset_id, category)')
+    conn.execute('CREATE INDEX idx_products_dataset_price ON products(dataset_id, price)')
+    conn.execute('CREATE INDEX idx_products_dataset_image_count ON products(dataset_id, image_count)')
+    conn.execute('CREATE INDEX idx_products_dataset_name ON products(dataset_id, name)')
+    conn.commit()
+
+    for dataset_id, label, source in [
+        ('sheinKaggle', 'Shein Kaggle 111k', 'Shein Kaggle'),
+        ('shein', 'Shein products sample', 'Shein'),
+        ('zara', 'Zara sales/product sample', 'Zara'),
+    ]:
+        total_count, with_images_count, with_reviews_count = conn.execute(
+            '''
+            SELECT COUNT(*),
+                   SUM(CASE WHEN image <> '' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN COALESCE(reviews_count, 0) > 0 THEN 1 ELSE 0 END)
+            FROM products
+            WHERE dataset_id = ?
+            ''',
+            (dataset_id,),
+        ).fetchone()
+        if total_count:
+            conn.execute(
+                'INSERT INTO datasets (id, label, source, total_count, with_images_count, with_reviews_count) VALUES (?, ?, ?, ?, ?, ?)',
+                (dataset_id, label, source, total_count, with_images_count or 0, with_reviews_count or 0),
+            )
+    conn.commit()
+    conn.close()
+    print(f'Catalog built at {DB_PATH}', file=sys.stderr)
+
+
+if __name__ == '__main__':
+    rebuild_db()

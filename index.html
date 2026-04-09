@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fast Fashion CSV Dashboard</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Dashboard rapide</p>
+          <h1>Fast Fashion Product Explorer</h1>
+          <p class="hero-copy">
+            Visualisation légère des CSV Shein et Zara avec recherche, filtre de catégories,
+            images quand elles existent, et aperçu propre des fiches produit.
+          </p>
+        </div>
+        <div class="hero-stats">
+          <div class="stat-card">
+            <span class="stat-label">Dataset</span>
+            <strong id="activeDatasetLabel">—</strong>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Produits affichés</span>
+            <strong id="resultsCount">0</strong>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Catégories</span>
+            <strong id="categoryCount">0</strong>
+          </div>
+        </div>
+      </header>
+
+      <section class="controls-panel">
+        <div class="field-group field-group-large">
+          <label for="datasetSelect">Dataset</label>
+          <select id="datasetSelect"></select>
+        </div>
+
+        <div class="field-group field-group-large">
+          <label for="searchInput">Recherche</label>
+          <input
+            id="searchInput"
+            type="search"
+            placeholder="Nom, description, couleur, taille, SKU..."
+            autocomplete="off"
+          />
+        </div>
+
+        <div class="field-group">
+          <label for="categorySelect">Catégorie</label>
+          <select id="categorySelect">
+            <option value="">Toutes les catégories</option>
+          </select>
+        </div>
+
+        <div class="field-group">
+          <label for="sortSelect">Tri</label>
+          <select id="sortSelect">
+            <option value="relevance">Pertinence / ordre source</option>
+            <option value="price-asc">Prix croissant</option>
+            <option value="price-desc">Prix décroissant</option>
+            <option value="rating-desc">Note décroissante</option>
+            <option value="reviews-desc">Avis décroissants</option>
+            <option value="name-asc">Nom A → Z</option>
+          </select>
+        </div>
+
+        <div class="field-group field-group-toggle">
+          <label class="toggle">
+            <input id="imagesOnlyToggle" type="checkbox" />
+            <span>Images seulement</span>
+          </label>
+          <button id="resetFiltersBtn" class="secondary-btn" type="button">Réinitialiser</button>
+        </div>
+      </section>
+
+      <section id="statusBanner" class="status-banner info">Chargement du dashboard…</section>
+
+      <section id="summaryBar" class="summary-bar"></section>
+
+      <section class="pagination-toolbar">
+        <div class="field-group field-group-inline">
+          <label for="pageSizeSelect">Par page</label>
+          <select id="pageSizeSelect">
+            <option value="12">12</option>
+            <option value="24" selected>24</option>
+            <option value="48">48</option>
+            <option value="96">96</option>
+          </select>
+        </div>
+        <div class="pagination-meta" id="paginationMeta">—</div>
+        <div class="pagination-actions">
+          <button id="prevPageBtn" type="button" class="secondary-btn">← Précédent</button>
+          <span id="pageIndicator">Page 1 / 1</span>
+          <button id="nextPageBtn" type="button" class="secondary-btn">Suivant →</button>
+        </div>
+      </section>
+
+      <main>
+        <div id="emptyState" class="empty-state hidden">
+          <h2>Aucun résultat</h2>
+          <p>Essaie une autre recherche ou enlève un filtre.</p>
+        </div>
+        <section id="productGrid" class="product-grid" aria-live="polite"></section>
+      </main>
+    </div>
+
+    <template id="productCardTemplate">
+      <article class="product-card">
+        <div class="product-media-wrap">
+          <img class="product-media" alt="" loading="lazy" referrerpolicy="no-referrer" />
+          <div class="image-fallback">Pas d'image fournie par ce CSV</div>
+          <button class="carousel-btn carousel-btn-prev hidden" type="button" aria-label="Image précédente">‹</button>
+          <button class="carousel-btn carousel-btn-next hidden" type="button" aria-label="Image suivante">›</button>
+          <div class="carousel-counter hidden"></div>
+          <span class="badge badge-source"></span>
+        </div>
+        <div class="product-body">
+          <div class="product-topline">
+            <span class="badge badge-category"></span>
+            <span class="product-price"></span>
+          </div>
+          <h3 class="product-title"></h3>
+          <p class="product-description"></p>
+          <dl class="product-meta"></dl>
+          <div class="product-actions">
+            <a class="product-link" target="_blank" rel="noopener noreferrer">Voir la fiche produit</a>
+          </div>
+        </div>
+      </article>
+    </template>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
