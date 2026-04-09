@@ -19,5 +19,11 @@ playwright-report/
 dashboard-*.png
 .firecrawl/
 
-# Workspace-local datasets kept outside the repo by default
-../data/
+# Local dataset downloads
+/data/
+/downloads/
+fast-fashion-dashboard/data/
+fast-fashion-dashboard/downloads/
+
+# Keep secrets local
+.env

@@ -3,18 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Fast Fashion CSV Dashboard</title>
+    <title>Fast Fashion Dashboard</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <div class="app-shell">
       <header class="hero">
         <div>
-          <p class="eyebrow">Dashboard rapide</p>
+          <p class="eyebrow">Catalogue local</p>
           <h1>Fast Fashion Product Explorer</h1>
           <p class="hero-copy">
-            Visualisation légère des CSV Shein et Zara avec recherche, filtre de catégories,
-            images quand elles existent, et aperçu propre des fiches produit.
+            Exploration locale de deux datasets retenus seulement : Shein Bright Data sample et ASOS Hugging Face.
+            Le projet télécharge les sources en local, construit le catalogue SQLite, puis sert l’API depuis le disque.
           </p>
         </div>
         <div class="hero-stats">
@@ -35,7 +35,7 @@
 
       <section class="controls-panel">
         <div class="field-group field-group-large">
-          <label for="datasetSelect">Dataset</label>
+          <label for="datasetSelect">Dataset local</label>
           <select id="datasetSelect"></select>
         </div>
 
@@ -112,7 +112,7 @@
       <article class="product-card">
         <div class="product-media-wrap">
           <img class="product-media" alt="" loading="lazy" referrerpolicy="no-referrer" />
-          <div class="image-fallback">Pas d'image fournie par ce CSV</div>
+          <div class="image-fallback">Pas d'image fournie par ce dataset</div>
           <button class="carousel-btn carousel-btn-prev hidden" type="button" aria-label="Image précédente">‹</button>
           <button class="carousel-btn carousel-btn-next hidden" type="button" aria-label="Image suivante">›</button>
           <div class="carousel-counter hidden"></div>

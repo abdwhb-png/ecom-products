@@ -2,7 +2,7 @@ const query = new URLSearchParams(window.location.search);
 
 const state = {
   datasets: [],
-  currentDataset: query.get('dataset') || 'sheinKaggle',
+  currentDataset: query.get('dataset') || 'shein',
   search: (query.get('search') || '').trim().toLowerCase(),
   category: (query.get('category') || '').trim(),
   imagesOnly: ['1', 'true', 'yes', 'on'].includes((query.get('imagesOnly') || '').toLowerCase()),
@@ -106,7 +106,7 @@ async function loadDatasets() {
   const response = await fetch('/api/datasets');
   if (!response.ok) throw new Error(`Impossible de charger les datasets (${response.status})`);
   const payload = await response.json();
-  state.datasets = payload.datasets || [];
+  state.datasets = (payload.datasets || []).filter((dataset) => ['shein', 'asos'].includes(dataset.id));
   if (!state.datasets.find((dataset) => dataset.id === state.currentDataset) && state.datasets.length) {
     state.currentDataset = state.datasets[0].id;
   }
@@ -134,7 +134,7 @@ async function refreshUI() {
   const payload = await fetchProducts();
   state.currentPayload = payload;
   render(payload);
-  updateStatus('Catalogue chargé.', 'success');
+  updateStatus('Catalogue chargé localement.', 'success');
 }
 
 async function fetchProducts() {
@@ -299,7 +299,7 @@ function updateStatus(message, tone = 'info') {
 
 function truncate(value, maxLength = 180) {
   if (!value) return '';
-  return value.length <= maxLength ? value : `${value.slice(0, maxLength).trim()}…`;
+  return value.length <= maxLength ? value : `${value.slice(0, maxLength).trim()}...`;
 }
 
 function escapeHtml(value) {

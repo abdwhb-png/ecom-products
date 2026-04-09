@@ -1,0 +1,20 @@
+{
+  "retained": [
+    {
+      "id": "shein",
+      "label": "Shein Bright Data sample",
+      "provider": "direct",
+      "url": "https://raw.githubusercontent.com/luminati-io/Shein-dataset-samples/main/shein-products.csv",
+      "local_filename": "shein-products.csv"
+    },
+    {
+      "id": "asos",
+      "label": "ASOS Hugging Face sample",
+      "provider": "huggingface",
+      "repo_id": "UniqueData/asos-e-commerce-dataset",
+      "file_path": "products_asos.csv",
+      "revision": "main",
+      "local_filename": "products_asos.csv"
+    }
+  ]
+}

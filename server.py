@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 import json
 import math
 import os
@@ -19,6 +21,12 @@ ALLOWED_SORTS = {
     'reviews-desc': 'reviews_count DESC NULLS LAST',
     'name-asc': 'name COLLATE NOCASE ASC',
 }
+
+
+def db_connect():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -43,15 +51,14 @@ class Handler(SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def handle_datasets(self):
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
+        conn = db_connect()
         rows = conn.execute('SELECT * FROM datasets ORDER BY id').fetchall()
         conn.close()
         self.end_json({'datasets': [dict(row) for row in rows]})
 
     def handle_products(self, query_string):
         params = parse_qs(query_string)
-        dataset_id = (params.get('dataset', ['sheinKaggle'])[0] or 'sheinKaggle').strip()
+        dataset_id = (params.get('dataset', ['shein'])[0] or 'shein').strip()
         search = (params.get('search', [''])[0] or '').strip().lower()
         category = (params.get('category', [''])[0] or '').strip()
         sort = (params.get('sort', ['relevance'])[0] or 'relevance').strip()
@@ -59,27 +66,26 @@ class Handler(SimpleHTTPRequestHandler):
         page = max(1, int(params.get('page', ['1'])[0] or '1'))
         page_size = max(1, min(200, int(params.get('pageSize', ['24'])[0] or '24')))
 
-        where = ['dataset_id = ?']
+        where = ['p.dataset_id = ?']
         values = [dataset_id]
 
         if search:
-            where.append('search_text LIKE ?')
+            where.append('p.search_text LIKE ?')
             values.append(f'%{search}%')
 
         if category:
-            where.append('(category LIKE ? OR category_path LIKE ?)')
+            where.append('(p.category LIKE ? OR p.category_path LIKE ?)')
             values.extend([f'%{category}%', f'%{category}%'])
 
         if images_only:
-            where.append("image <> ''")
+            where.append("p.image <> ''")
 
         where_sql = ' AND '.join(where)
         order_sql = ALLOWED_SORTS.get(sort, ALLOWED_SORTS['relevance'])
 
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
+        conn = db_connect()
 
-        total = conn.execute(f'SELECT COUNT(*) FROM products WHERE {where_sql}', values).fetchone()[0]
+        total = conn.execute(f'SELECT COUNT(*) FROM products p WHERE {where_sql}', values).fetchone()[0]
         total_pages = max(1, math.ceil(total / page_size))
         page = min(page, total_pages)
         offset = (page - 1) * page_size
@@ -89,7 +95,7 @@ class Handler(SimpleHTTPRequestHandler):
             SELECT p.*, COALESCE(s.ok, 0) AS image_ok
             FROM products p
             LEFT JOIN image_status s ON s.dataset_id = p.dataset_id AND s.product_id = p.id
-            WHERE {where_sql.replace('dataset_id', 'p.dataset_id').replace('search_text', 'p.search_text').replace('category', 'p.category').replace('category_path', 'p.category_path').replace("image <> ''", "p.image <> ''")}
+            WHERE {where_sql}
             ORDER BY {order_sql}
             LIMIT ? OFFSET ?
             ''',
@@ -98,11 +104,11 @@ class Handler(SimpleHTTPRequestHandler):
 
         category_rows = conn.execute(
             '''
-            SELECT category, COUNT(*) AS count
-            FROM products
-            WHERE dataset_id = ?
-            GROUP BY category
-            ORDER BY count DESC, category COLLATE NOCASE ASC
+            SELECT p.category, COUNT(*) AS count
+            FROM products p
+            WHERE p.dataset_id = ?
+            GROUP BY p.category
+            ORDER BY count DESC, p.category COLLATE NOCASE ASC
             ''',
             (dataset_id,),
         ).fetchall()
