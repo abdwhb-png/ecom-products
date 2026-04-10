@@ -109,39 +109,49 @@ def shein_local_rows(path: Path):
     with path.open(newline='', encoding='utf-8', errors='replace') as handle:
         reader = csv.DictReader(handle)
         for index, row in enumerate(reader, start=1):
-            images = [img for img in parse_python_list(row.get('images') or row.get('image_urls')) if isinstance(img, str) and img.strip()]
-            attrs_list = parse_python_list(row.get('description'))
-            attr_pairs = []
-            for item in attrs_list:
-                if isinstance(item, dict):
-                    attr_pairs.extend((str(k), str(v)) for k, v in item.items())
-            color = next((v for k, v in attr_pairs if k.lower() == 'color'), '')
-            name = (row.get('name') or '').strip()
-            category = infer_category_from_name(name, row.get('url') or '')
-            description = ' • '.join(f'{k}: {v}' for k, v in attr_pairs)
-            sku = (row.get('sku') or '').replace('SKU:', '').strip()
+            images = [img for img in parse_python_list(row.get('image_urls')) if isinstance(img, str) and img.strip()]
+            sizes = [size for size in parse_jsonish_list(row.get('all_available_sizes')) if isinstance(size, str) and size.strip()]
+            attrs = parse_jsonish_list(row.get('other_attributes'))
+            color = (row.get('color') or '').strip()
+            name = (row.get('product_name') or '').strip()
+            description = (row.get('description') or '').strip()
+            category = (row.get('category') or row.get('root_category') or '').strip() or infer_category_from_name(name, row.get('url') or '')
             size_text = (row.get('size') or '').strip()
+            search_parts = [
+                name,
+                description,
+                category,
+                row.get('root_category', ''),
+                color,
+                size_text,
+                row.get('brand', ''),
+                row.get('url', ''),
+                *sizes,
+            ]
+            for item in attrs:
+                if isinstance(item, dict):
+                    search_parts.extend([str(item.get('name', '')), str(item.get('value', ''))])
             yield {
                 'dataset_id': 'shein',
-                'id': sku or f'shein-{index}',
+                'id': (row.get('product_id') or row.get('model_number') or f'shein-{index}').strip(),
                 'name': name or 'Sans nom',
                 'description': description,
                 'category': category,
                 'category_path': '',
-                'price': number_from_text(row.get('price')),
-                'price_text': (row.get('price') or '').strip() or 'Prix non disponible',
-                'rating': None,
-                'reviews_count': None,
+                'price': number_from_text(row.get('final_price')),
+                'price_text': f"{row.get('final_price', '').strip()} {row.get('currency', '').strip()}".strip() or 'Prix non disponible',
+                'rating': number_from_text(row.get('rating')),
+                'reviews_count': int(number_from_text(row.get('reviews_count')) or 0) or None,
                 'brand': (row.get('brand') or '').strip() or 'SHEIN',
                 'color': color,
                 'size_text': size_text,
-                'sizes_json': json.dumps(split_sizes(size_text), ensure_ascii=False),
-                'image': images[0] if images else '',
+                'sizes_json': json.dumps(sizes or split_sizes(size_text), ensure_ascii=False),
+                'image': (row.get('main_image') or '').strip() or (images[0] if images else ''),
                 'image_urls_json': json.dumps(images, ensure_ascii=False),
-                'image_count': len(images),
+                'image_count': int(number_from_text(row.get('image_count')) or len(images)),
                 'url': (row.get('url') or '').strip(),
                 'source': 'Shein Bright Data sample',
-                'search_text': ' '.join(filter(None, [name, description, category, color, size_text, row.get('brand', ''), row.get('url', '')])).lower(),
+                'search_text': ' '.join(filter(None, search_parts)).lower(),
             }
 
 

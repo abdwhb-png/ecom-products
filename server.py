@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent
 DB_PATH = ROOT / 'catalog.db'
 
 ALLOWED_SORTS = {
-    'relevance': 'COALESCE(s.ok, 0) DESC, image_count DESC, rowid ASC',
+    'relevance': 'COALESCE(s.ok, 0) DESC, p.image_count DESC, p.id ASC',
     'price-asc': 'price ASC NULLS LAST',
     'price-desc': 'price DESC NULLS LAST',
     'rating-desc': 'rating DESC NULLS LAST',
@@ -26,6 +26,21 @@ ALLOWED_SORTS = {
 def db_connect():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS image_status (
+            dataset_id TEXT NOT NULL,
+            product_id TEXT NOT NULL,
+            image_url TEXT,
+            ok INTEGER NOT NULL,
+            status_code INTEGER,
+            content_type TEXT,
+            checked_at REAL NOT NULL,
+            PRIMARY KEY (dataset_id, product_id)
+        )
+        '''
+    )
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_image_status_dataset_ok ON image_status(dataset_id, ok)')
     return conn
 
 
