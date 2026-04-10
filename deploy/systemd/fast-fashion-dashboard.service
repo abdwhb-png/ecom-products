@@ -1,0 +1,15 @@
+[Unit]
+Description=Fast Fashion Dashboard dev server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ai/.openclaw/workspace/fast-fashion-dashboard
+Environment=FAST_FASHION_HOST=127.0.0.1
+Environment=FAST_FASHION_PORT=8765
+ExecStart=/home/ai/.openclaw/workspace/fast-fashion-dashboard/scripts/run-dev-server.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

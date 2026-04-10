@@ -257,34 +257,9 @@ def iter_server_pids():
 
 
 def cleanup_previous_servers():
-    pids = list(iter_server_pids() or [])
-    if not pids:
-        return
-    for pid in pids:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except Exception:
-            pass
-    deadline = time.time() + 3.0
-    while time.time() < deadline:
-        alive = False
-        for pid in pids:
-            try:
-                os.kill(pid, 0)
-                alive = True
-                break
-            except ProcessLookupError:
-                continue
-            except PermissionError:
-                continue
-        if not alive:
-            return
-        time.sleep(0.15)
-    for pid in pids:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except Exception:
-            pass
+    # Intentionally disabled in stable dev mode.
+    # Keep old servers alive unless the user explicitly stops them.
+    return
 
 
 def normalize_goods_id(dataset_id, product_id):
@@ -734,7 +709,6 @@ def find_available_port(host: str, preferred_port: int, attempts: int = 20) -> i
 if __name__ == '__main__':
     host = os.getenv('FAST_FASHION_HOST', '127.0.0.1')
     preferred_port = int(os.getenv('FAST_FASHION_PORT', '8765'))
-    cleanup_previous_servers()
     port = find_available_port(host, preferred_port)
     server = ThreadingHTTPServer((host, port), Handler)
     if port != preferred_port:

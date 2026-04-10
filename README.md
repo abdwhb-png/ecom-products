@@ -50,6 +50,29 @@ By default the app serves on `127.0.0.1:8765` and automatically falls forward to
 FAST_FASHION_HOST=0.0.0.0 FAST_FASHION_PORT=8765 python3 server.py
 ```
 
+## Persistent local dev service
+
+For a stable local process, use the bundled wrapper plus the systemd user unit:
+
+- `scripts/run-dev-server.sh`
+- `deploy/systemd/fast-fashion-dashboard.service`
+
+Install it locally with:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp deploy/systemd/fast-fashion-dashboard.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now fast-fashion-dashboard.service
+systemctl --user status fast-fashion-dashboard.service --no-pager
+```
+
+If your environment does not expose a user bus, you can still run the wrapper directly:
+
+```bash
+./scripts/run-dev-server.sh
+```
+
 ## API
 
 ### `GET /api/openapi.json`
