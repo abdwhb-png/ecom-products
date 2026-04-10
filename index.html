@@ -77,6 +77,46 @@
         </div>
       </section>
 
+      <section class="s3-panel">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">S3 background jobs</p>
+            <h2>Upload des images vers S3</h2>
+          </div>
+          <div class="s3-actions-inline">
+            <button id="refreshS3JobsBtn" class="secondary-btn" type="button">Actualiser</button>
+          </div>
+        </div>
+        <div class="s3-grid">
+          <div class="field-group">
+            <label for="s3DatasetSelect">Source</label>
+            <select id="s3DatasetSelect"></select>
+          </div>
+          <div class="field-group">
+            <label for="s3BucketInput">Bucket</label>
+            <input id="s3BucketInput" type="text" placeholder="my-bucket" />
+          </div>
+          <div class="field-group">
+            <label for="s3PrefixInput">Prefix</label>
+            <input id="s3PrefixInput" type="text" placeholder="fast-fashion/images" />
+          </div>
+          <div class="field-group">
+            <label for="s3LimitInput">Nombre de ressources</label>
+            <input id="s3LimitInput" type="number" min="1" max="10000" value="50" />
+          </div>
+          <div class="field-group">
+            <label for="s3ConcurrencyInput">Multiprocessing</label>
+            <input id="s3ConcurrencyInput" type="number" min="1" max="24" value="4" />
+          </div>
+        </div>
+        <div class="s3-actions">
+          <button id="startS3JobBtn" class="primary-btn" type="button">Lancer l’upload S3</button>
+          <button id="stopS3JobBtn" class="secondary-btn" type="button">Stop job actif</button>
+          <span id="s3ConfigHint" class="muted small"></span>
+        </div>
+        <div id="s3JobsList" class="s3-jobs-list"></div>
+      </section>
+
       <section id="statusBanner" class="status-banner info">Chargement du dashboard…</section>
 
       <section id="summaryBar" class="summary-bar"></section>

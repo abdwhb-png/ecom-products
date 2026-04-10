@@ -10,6 +10,7 @@ const state = {
   page: Math.max(1, Number.parseInt(query.get('page') || '1', 10) || 1),
   pageSize: Math.max(1, Number.parseInt(query.get('pageSize') || '24', 10) || 24),
   currentPayload: null,
+  s3Jobs: [],
 };
 
 const els = {
@@ -33,13 +34,26 @@ const els = {
   categoryCount: document.getElementById('categoryCount'),
   productCardTemplate: document.getElementById('productCardTemplate'),
   activeFilters: document.getElementById('activeFilters'),
+  s3DatasetSelect: document.getElementById('s3DatasetSelect'),
+  s3BucketInput: document.getElementById('s3BucketInput'),
+  s3PrefixInput: document.getElementById('s3PrefixInput'),
+  s3LimitInput: document.getElementById('s3LimitInput'),
+  s3ConcurrencyInput: document.getElementById('s3ConcurrencyInput'),
+  startS3JobBtn: document.getElementById('startS3JobBtn'),
+  stopS3JobBtn: document.getElementById('stopS3JobBtn'),
+  refreshS3JobsBtn: document.getElementById('refreshS3JobsBtn'),
+  s3JobsList: document.getElementById('s3JobsList'),
+  s3ConfigHint: document.getElementById('s3ConfigHint'),
 };
 
 async function init() {
   bindEvents();
   syncControlsFromState();
   await loadDatasets();
+  await loadS3Config();
   await refreshUI();
+  await refreshS3Jobs();
+  setInterval(refreshS3Jobs, 5000);
 }
 
 function bindEvents() {
@@ -100,6 +114,10 @@ function bindEvents() {
     syncControlsFromState();
     await refreshUI();
   });
+
+  els.startS3JobBtn.addEventListener('click', startS3Job);
+  els.stopS3JobBtn.addEventListener('click', stopActiveS3Job);
+  els.refreshS3JobsBtn.addEventListener('click', refreshS3Jobs);
 }
 
 async function loadDatasets() {
@@ -112,6 +130,7 @@ async function loadDatasets() {
     state.currentDataset = state.datasets[0].id;
   }
   hydrateDatasetSelect();
+  hydrateS3DatasetSelect();
 }
 
 function hydrateDatasetSelect() {
@@ -120,6 +139,14 @@ function hydrateDatasetSelect() {
     .join('');
   els.datasetSelect.innerHTML = options;
   els.datasetSelect.value = state.currentDataset;
+}
+
+function hydrateS3DatasetSelect() {
+  const options = state.datasets
+    .map((dataset) => `<option value="${dataset.id}">${escapeHtml(dataset.label)}</option>`)
+    .join('');
+  els.s3DatasetSelect.innerHTML = options;
+  els.s3DatasetSelect.value = state.currentDataset;
 }
 
 function syncControlsFromState() {
@@ -154,6 +181,78 @@ async function fetchProducts() {
   const payload = await response.json();
   state.page = payload.pagination?.page || 1;
   return payload;
+}
+
+async function loadS3Config() {
+  try {
+    const response = await fetch('/api/s3/config');
+    if (!response.ok) return;
+    const payload = await response.json();
+    const config = payload.data || {};
+    els.s3BucketInput.value = config.bucket || '';
+    els.s3PrefixInput.value = config.prefix || '';
+    els.s3ConfigHint.textContent = config.bucket ? `Config chargée: ${config.bucket}` : 'Ajoute un bucket S3 pour lancer des jobs.';
+  } catch (error) {
+    console.warn(error);
+  }
+}
+
+async function refreshS3Jobs() {
+  try {
+    const response = await fetch('/api/s3/jobs');
+    if (!response.ok) return;
+    const payload = await response.json();
+    state.s3Jobs = payload.data || [];
+    renderS3Jobs(state.s3Jobs);
+  } catch (error) {
+    console.warn(error);
+  }
+}
+
+function renderS3Jobs(jobs) {
+  if (!jobs.length) {
+    els.s3JobsList.innerHTML = '<div class="s3-job-empty">Aucun job S3 pour le moment.</div>';
+    return;
+  }
+  els.s3JobsList.innerHTML = jobs.map((job) => `
+    <article class="s3-job-card">
+      <div class="s3-job-header">
+        <strong>${escapeHtml(job.job_id)}</strong>
+        <span class="job-pill job-${escapeHtml(job.status || 'queued')}">${escapeHtml(job.status || 'queued')}</span>
+      </div>
+      <div class="s3-job-meta">
+        <span>${escapeHtml(job.dataset_id || '')}</span>
+        <span>${job.processed || 0}/${job.total || 0} traités</span>
+        <span>Uploadés: ${job.uploaded || 0}</span>
+        <span>Ignorés: ${job.skipped || 0}</span>
+        <span>Erreurs: ${job.failed || 0}</span>
+      </div>
+    </article>
+  `).join('');
+}
+
+async function startS3Job() {
+  const body = {
+    dataset_id: els.s3DatasetSelect.value,
+    bucket: els.s3BucketInput.value.trim(),
+    prefix: els.s3PrefixInput.value.trim(),
+    limit: Number.parseInt(els.s3LimitInput.value, 10) || 50,
+    concurrency: Number.parseInt(els.s3ConcurrencyInput.value, 10) || 4,
+  };
+  const response = await fetch('/api/s3/jobs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(`Impossible de lancer le job S3 (${response.status})`);
+  await refreshS3Jobs();
+}
+
+async function stopActiveS3Job() {
+  const active = state.s3Jobs.find((job) => ['running', 'queued', 'cancel_requested'].includes(job.status));
+  if (!active) return;
+  await fetch(`/api/s3/jobs/${encodeURIComponent(active.job_id)}/cancel`, { method: 'POST' });
+  await refreshS3Jobs();
 }
 
 function render(payload) {
@@ -292,11 +391,12 @@ function renderProducts(products) {
       ['Avis', product.reviews_count ?? '—'],
       ['Note', product.rating ?? '—'],
       ['Source', product.source || '—'],
+      ['S3', product.saved_on_s3 ? 'Oui' : 'Non'],
     ];
 
     meta.innerHTML = metaEntries
       .filter(([, value]) => value !== '' && value !== null && value !== undefined && value !== '—')
-      .slice(0, 6)
+      .slice(0, 8)
       .map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd>`)
       .join('');
 
