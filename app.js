@@ -32,6 +32,7 @@ const els = {
   resultsCount: document.getElementById('resultsCount'),
   categoryCount: document.getElementById('categoryCount'),
   productCardTemplate: document.getElementById('productCardTemplate'),
+  activeFilters: document.getElementById('activeFilters'),
 };
 
 async function init() {
@@ -167,6 +168,7 @@ function render(payload) {
 
   fillCategorySelect(categories);
   renderSummary(dataset, categories, pagination);
+  renderActiveFilters();
   renderPagination(pagination);
   renderProducts(products);
 }
@@ -188,6 +190,26 @@ function renderSummary(dataset, categories, pagination) {
     <span><strong>${new Intl.NumberFormat('fr-FR').format(dataset?.with_images_count || 0)}</strong> fiches avec image</span>
     <span><strong>${new Intl.NumberFormat('fr-FR').format(dataset?.with_reviews_count || 0)}</strong> fiches avec avis > 0</span>
   `;
+}
+
+function renderActiveFilters() {
+  const chips = [];
+  const activeDataset = state.datasets.find((dataset) => dataset.id === state.currentDataset);
+  if (activeDataset) chips.push(`Dataset: ${activeDataset.label}`);
+  if (state.search) chips.push(`Recherche: ${state.search}`);
+  if (state.category) chips.push(`Catégorie: ${state.category}`);
+  if (state.imagesOnly) chips.push('Images seulement');
+  if (state.sort !== 'relevance') chips.push(`Tri: ${els.sortSelect.options[els.sortSelect.selectedIndex]?.text || state.sort}`);
+  if (state.pageSize !== 24) chips.push(`Par page: ${state.pageSize}`);
+
+  if (!chips.length) {
+    els.activeFilters.classList.add('hidden');
+    els.activeFilters.innerHTML = '';
+    return;
+  }
+
+  els.activeFilters.classList.remove('hidden');
+  els.activeFilters.innerHTML = chips.map((chip) => `<span class="filter-chip">${escapeHtml(chip)}</span>`).join('');
 }
 
 function renderPagination(pagination) {
@@ -269,6 +291,7 @@ function renderProducts(products) {
       ['Images', product.image_count ?? images.length ?? 0],
       ['Avis', product.reviews_count ?? '—'],
       ['Note', product.rating ?? '—'],
+      ['Source', product.source || '—'],
     ];
 
     meta.innerHTML = metaEntries
