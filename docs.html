@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fast Fashion Dashboard API Docs</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #08111f;
+        --panel: rgba(15, 23, 42, 0.92);
+        --panel-2: rgba(30, 41, 59, 0.92);
+        --line: rgba(148, 163, 184, 0.2);
+        --text: #e2e8f0;
+        --muted: #94a3b8;
+        --accent: #a78bfa;
+        --accent-2: #38bdf8;
+        --code: #0f172a;
+        --ok: #34d399;
+        --warn: #fbbf24;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background:
+          radial-gradient(circle at top left, rgba(167, 139, 250, 0.18), transparent 32%),
+          radial-gradient(circle at top right, rgba(56, 189, 248, 0.12), transparent 28%),
+          var(--bg);
+        color: var(--text);
+        line-height: 1.6;
+      }
+      .wrap {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 32px 20px 80px;
+      }
+      .hero {
+        background: linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(15, 23, 42, 0.82));
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        padding: 28px;
+        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.35);
+      }
+      .hero h1 {
+        margin: 0 0 12px;
+        font-size: clamp(2rem, 5vw, 3.4rem);
+        line-height: 1.05;
+      }
+      .hero p {
+        margin: 0;
+        color: var(--muted);
+        max-width: 900px;
+      }
+      .pill-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 18px;
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: rgba(167, 139, 250, 0.12);
+        border: 1px solid rgba(167, 139, 250, 0.25);
+        color: #e9d5ff;
+        font-size: 0.92rem;
+      }
+      .pill.ok { background: rgba(52, 211, 153, 0.12); border-color: rgba(52, 211, 153, 0.22); color: #bbf7d0; }
+      .pill.blue { background: rgba(56, 189, 248, 0.12); border-color: rgba(56, 189, 248, 0.22); color: #bae6fd; }
+      .grid {
+        display: grid;
+        gap: 18px;
+        margin-top: 18px;
+      }
+      .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 20px;
+      }
+      .card h2, .card h3 { margin-top: 0; }
+      .card h2 { font-size: 1.35rem; }
+      .card h3 { font-size: 1rem; color: #f8fafc; }
+      .muted { color: var(--muted); }
+      code, pre {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      }
+      pre {
+        margin: 0;
+        overflow: auto;
+        padding: 16px;
+        border-radius: 14px;
+        background: var(--code);
+        border: 1px solid rgba(148, 163, 184, 0.18);
+      }
+      code.inline {
+        padding: 2px 6px;
+        border-radius: 6px;
+        background: rgba(15, 23, 42, 0.8);
+        border: 1px solid rgba(148, 163, 184, 0.18);
+      }
+      .table {
+        width: 100%;
+        border-collapse: collapse;
+        overflow: hidden;
+        border-radius: 14px;
+      }
+      .table th, .table td {
+        text-align: left;
+        padding: 12px 10px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+        vertical-align: top;
+      }
+      .table th { color: #cbd5e1; font-size: 0.92rem; }
+      .table td { color: #e2e8f0; }
+      .endpoint {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        margin-bottom: 10px;
+      }
+      .method {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 72px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        font-size: 0.82rem;
+      }
+      .get { background: rgba(52, 211, 153, 0.18); color: #bbf7d0; }
+      .path { color: #dbeafe; font-size: 1rem; }
+      .small { font-size: 0.92rem; }
+      a { color: #93c5fd; }
+      ul { margin-top: 10px; }
+      .section-title {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 10px;
+        border-radius: 999px;
+        background: rgba(251, 191, 36, 0.12);
+        color: #fde68a;
+        border: 1px solid rgba(251, 191, 36, 0.18);
+        font-size: 0.8rem;
+      }
+      .two-col {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+      }
+      @media (max-width: 900px) {
+        .grid.two, .grid.three, .two-col { grid-template-columns: 1fr; }
+        .wrap { padding: 18px 14px 60px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <section class="hero">
+        <div class="pill-row">
+          <span class="pill ok">Read-only API</span>
+          <span class="pill blue">External clients friendly</span>
+          <span class="pill">OpenAPI 3.1</span>
+        </div>
+        <h1>Fast Fashion Dashboard API</h1>
+        <p>
+          Cette API expose uniquement les ressources utiles au projet : <strong>catégories</strong> et <strong>produits</strong>.
+          Le format par défaut reste compatible avec le dashboard, et un format ressource stable est disponible pour les services externes.
+        </p>
+      </section>
+
+      <div class="grid two">
+        <section class="card">
+          <div class="section-title">
+            <h2>Points clés</h2>
+            <span class="badge">Stable</span>
+          </div>
+          <ul>
+            <li>Réponses JSON avec erreurs structurées.</li>
+            <li>CORS activé pour les consommateurs externes.</li>
+            <li><code class="inline">goods_id</code> stable et unique par dataset.</li>
+            <li>Monnaie sérialisée en chaînes à 2 décimales.</li>
+            <li>Nesting conservé en vrais tableaux/objets.</li>
+            <li><code class="inline">source_url</code> et <code class="inline">category_url</code> privilégiés pour le matching.</li>
+          </ul>
+        </section>
+
+        <section class="card">
+          <h2>Base URLs</h2>
+          <table class="table">
+            <tr><th>OpenAPI</th><td><code class="inline">/api/openapi.json</code></td></tr>
+            <tr><th>Catégories</th><td><code class="inline">/api/categories</code></td></tr>
+            <tr><th>Produit</th><td><code class="inline">/api/products/{goods_id}</code></td></tr>
+            <tr><th>Version</th><td><code class="inline">1.0.0</code></td></tr>
+          </table>
+        </section>
+      </div>
+
+      <section class="card">
+        <div class="section-title">
+          <h2>Endpoints</h2>
+          <span class="muted small">Tous en lecture seule</span>
+        </div>
+
+        <div style="margin-top: 14px;" class="grid">
+          <article class="card" style="background: var(--panel-2);">
+            <div class="endpoint"><span class="method get">GET</span><span class="path">/api/categories</span></div>
+            <p class="muted small">Liste les catégories dans un format stable.</p>
+            <pre>{
+  "dataset": {"id": "shein", "label": "Shein Bright Data sample"},
+  "data": [
+    {
+      "name": "Dresses",
+      "slug": "dresses",
+      "top_category_name": "Dresses",
+      "source_url": "https://...",
+      "image_url": "https://..."
+    }
+  ],
+  "pagination": {"page": 1, "pageSize": 100, "total": 502, "totalPages": 6}
+}</pre>
+          </article>
+
+          <article class="card" style="background: var(--panel-2);">
+            <div class="endpoint"><span class="method get">GET</span><span class="path">/api/categories/{slug}</span></div>
+            <p class="muted small">Retourne une seule catégorie.</p>
+            <pre>{
+  "dataset": {...},
+  "data": {
+    "name": "Dresses",
+    "slug": "dresses",
+    "source_url": "https://..."
+  }
+}</pre>
+          </article>
+
+          <article class="card" style="background: var(--panel-2);">
+            <div class="endpoint"><span class="method get">GET</span><span class="path">/api/products</span></div>
+            <p class="muted small">Liste les produits. Utilise <code class="inline">format=resource</code> pour le schéma externe.</p>
+            <pre>{
+  "dataset": {...},
+  "data": [
+    {
+      "goods_id": "shein:123",
+      "goods_sn": "123",
+      "spu": "123",
+      "name": "Long Dress",
+      "retail_price": "10.49",
+      "sale_price": "10.49",
+      "images": ["https://..."],
+      "attributes": [{"name": "brand", "value": "SHEIN"}]
+    }
+  ],
+  "pagination": {...},
+  "categories": [...]
+}</pre>
+          </article>
+
+          <article class="card" style="background: var(--panel-2);">
+            <div class="endpoint"><span class="method get">GET</span><span class="path">/api/products/{goods_id}</span></div>
+            <p class="muted small">Retourne un produit unique par identifiant stable.</p>
+            <pre>{
+  "dataset": {...},
+  "data": {
+    "goods_id": "shein:123",
+    "category_url": "http://host/api/categories/dresses?dataset=shein",
+    "product_url": "https://..."
+  }
+}</pre>
+          </article>
+        </div>
+      </section>
+
+      <div class="grid two">
+        <section class="card">
+          <h2>Paramètres utiles</h2>
+          <table class="table">
+            <tr><th>dataset</th><td><code class="inline">shein</code> ou <code class="inline">asos</code></td></tr>
+            <tr><th>page</th><td>Pagination, commence à 1</td></tr>
+            <tr><th>pageSize</th><td>Jusqu’à 200</td></tr>
+            <tr><th>search</th><td>Recherche texte</td></tr>
+            <tr><th>category</th><td>Filtre catégorie</td></tr>
+            <tr><th>imagesOnly</th><td><code class="inline">true</code>/<code class="inline">false</code></td></tr>
+            <tr><th>sort</th><td><code class="inline">relevance</code>, <code class="inline">price-asc</code>, <code class="inline">price-desc</code>, <code class="inline">rating-desc</code>, <code class="inline">reviews-desc</code>, <code class="inline">name-asc</code></td></tr>
+            <tr><th>format</th><td><code class="inline">legacy</code> ou <code class="inline">resource</code></td></tr>
+          </table>
+        </section>
+
+        <section class="card">
+          <h2>Compatibilité importante</h2>
+          <ul>
+            <li>Les champs monétaires restent des chaînes.</li>
+            <li>Les données imbriquées restent des objets/arrays réels.</li>
+            <li>Les schémas sont stables et lisibles par des services externes.</li>
+            <li>Le dashboard peut continuer à consommer le format legacy si nécessaire.</li>
+          </ul>
+          <p class="muted small">Tu peux aussi lire la spec brute via <code class="inline">/api/openapi.json</code>.</p>
+        </section>
+      </div>
+    </div>
+  </body>
+</html>

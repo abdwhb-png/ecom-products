@@ -4,10 +4,11 @@ from __future__ import annotations
 import json
 import math
 import os
+import signal
 import socket
 import sqlite3
+import time
 import traceback
-from collections import defaultdict
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -19,6 +20,7 @@ ALLOWED_DATASETS = {'shein', 'asos'}
 DEFAULT_PAGE_SIZE = 24
 MAX_PAGE_SIZE = 200
 API_PREFIX = '/api'
+DOCS_PATH = ROOT / 'docs.html'
 
 ALLOWED_SORTS = {
     'relevance': 'COALESCE(s.ok, 0) DESC, p.image_count DESC, p.id ASC',
@@ -258,6 +260,59 @@ def parse_json_list(raw):
         return []
 
 
+def iter_server_pids():
+    current_pid = os.getpid()
+    for entry in Path('/proc').iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid == current_pid:
+            continue
+        try:
+            raw = (entry / 'cmdline').read_bytes().replace(b'\x00', b' ').decode('utf-8', errors='ignore').strip()
+        except Exception:
+            continue
+        if not raw:
+            continue
+        normalized = raw.lower()
+        if 'fast-fashion-dashboard/server.py' in normalized or normalized.endswith('/server.py') or 'python' in normalized and 'server.py' in normalized:
+            yield pid, raw
+
+
+def cleanup_previous_servers():
+    pids = list(iter_server_pids())
+    if not pids:
+        return
+    for pid, _ in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            continue
+    deadline = time.time() + 3.0
+    while time.time() < deadline:
+        alive = []
+        for pid, _ in pids:
+            try:
+                os.kill(pid, 0)
+                alive.append(pid)
+            except ProcessLookupError:
+                continue
+            except PermissionError:
+                continue
+        if not alive:
+            return
+        time.sleep(0.15)
+    for pid, _ in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            continue
+
+
 def get_base_url(handler):
     host = handler.headers.get('Host')
     if host:
@@ -315,6 +370,8 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         try:
+            if parsed.path == '/docs':
+                return self.handle_docs()
             if parsed.path == '/api/openapi.json':
                 return json_response(self, OPENAPI_SPEC)
             if parsed.path == '/api/datasets':
@@ -337,6 +394,19 @@ class Handler(SimpleHTTPRequestHandler):
         except Exception as exc:
             traceback.print_exc()
             return error_response(self, f'Internal server error: {exc}', HTTPStatus.INTERNAL_SERVER_ERROR, code='internal_error')
+
+    def handle_docs(self):
+        if not DOCS_PATH.exists():
+            return error_response(self, 'Docs page not available', HTTPStatus.NOT_FOUND, code='not_found')
+        content = DOCS_PATH.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(content)))
+        self.send_header('Cache-Control', 'no-store')
+        for key, value in CORS_HEADERS.items():
+            self.send_header(key, value)
+        self.end_headers()
+        self.wfile.write(content)
 
     def handle_datasets(self, query_string):
         params = parse_qs(query_string)
@@ -661,6 +731,7 @@ def find_available_port(host: str, preferred_port: int, attempts: int = 20) -> i
 if __name__ == '__main__':
     host = os.getenv('FAST_FASHION_HOST', '127.0.0.1')
     preferred_port = int(os.getenv('FAST_FASHION_PORT', '8765'))
+    cleanup_previous_servers()
     port = find_available_port(host, preferred_port)
     server = ThreadingHTTPServer((host, port), Handler)
     if port != preferred_port:
