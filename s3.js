@@ -40,6 +40,14 @@ const state = {
   selectedJobDetail: null,
   detailPage: 1,
   detailPageSize: 6,
+  serverConfig: {
+    bucket: '',
+    prefix: '',
+  },
+  formDraft: {
+    bucket: false,
+    prefix: false,
+  },
 };
 
 function escapeHtml(value) {
@@ -78,6 +86,12 @@ function bindEvents() {
   els.unlockBtn.addEventListener('click', unlockPage);
   els.passwordInput.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') unlockPage();
+  });
+  els.s3BucketInput.addEventListener('input', () => {
+    state.formDraft.bucket = els.s3BucketInput.value.trim() !== (state.serverConfig.bucket || '');
+  });
+  els.s3PrefixInput.addEventListener('input', () => {
+    state.formDraft.prefix = els.s3PrefixInput.value.trim() !== (state.serverConfig.prefix || '');
   });
   els.startS3JobBtn.addEventListener('click', startS3Job);
   els.stopS3JobBtn.addEventListener('click', stopActiveS3Job);
@@ -182,15 +196,24 @@ async function refreshS3Jobs() {
     }
   }
   const active = state.s3Jobs.filter((job) => ['running', 'queued', 'cancel_requested'].includes(job.status));
+  const nextConfig = {
+    bucket: payload.config?.bucket || '',
+    prefix: payload.config?.prefix || '',
+  };
+  state.serverConfig = nextConfig;
+  if (state.formDraft.bucket) {
+    state.formDraft.bucket = els.s3BucketInput.value.trim() !== nextConfig.bucket;
+  } else {
+    els.s3BucketInput.value = nextConfig.bucket;
+  }
+  if (state.formDraft.prefix) {
+    state.formDraft.prefix = els.s3PrefixInput.value.trim() !== nextConfig.prefix;
+  } else {
+    els.s3PrefixInput.value = nextConfig.prefix;
+  }
   els.activeJobsCount.textContent = String(active.length);
-  els.s3ConfigState.textContent = payload.config?.bucket ? payload.config.bucket : '—';
-  els.s3ConfigHint.textContent = payload.config?.bucket ? `Bucket configuré: ${payload.config.bucket}` : 'Configure ton bucket ici, puis lance un job.';
-  if (payload.config?.bucket) {
-    els.s3BucketInput.value = payload.config.bucket;
-  }
-  if (payload.config?.prefix) {
-    els.s3PrefixInput.value = payload.config.prefix;
-  }
+  els.s3ConfigState.textContent = nextConfig.bucket || '—';
+  els.s3ConfigHint.textContent = nextConfig.bucket ? `Bucket configuré: ${nextConfig.bucket}` : 'Configure ton bucket ici, puis lance un job.';
 }
 
 function renderS3Jobs(jobs) {
