@@ -27,3 +27,7 @@ fast-fashion-dashboard/downloads/
 
 # Keep secrets local
 .env
+
+# Local runtime helpers/state
+s3_state.json
+.tmp-run-s3*.sh

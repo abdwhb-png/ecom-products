@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fast Fashion Dashboard — S3</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Zone sensible</p>
+          <h1>Fast Fashion S3 Control</h1>
+          <p class="hero-copy">
+            Upload manuel, suivi d’avancement, arrêt d’un job et paramétrage des lots à traiter.
+            La configuration non sensible est saisie ici et persistée côté serveur; les secrets AWS restent dans l’environnement du serveur.
+          </p>
+        </div>
+        <div class="hero-stats">
+          <div class="stat-card">
+            <span class="stat-label">Accès</span>
+            <strong id="authStateLabel">Vérification…</strong>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Jobs actifs</span>
+            <strong id="activeJobsCount">0</strong>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Dernière config</span>
+            <strong id="s3ConfigState">—</strong>
+          </div>
+        </div>
+      </header>
+
+      <section id="authGate" class="auth-gate">
+        <h2>Accès protégé</h2>
+        <p>Entre le mot de passe S3 pour déverrouiller cette page.</p>
+        <div class="auth-row">
+          <input id="passwordInput" type="password" placeholder="Mot de passe" />
+          <button id="unlockBtn" class="primary-btn" type="button">Déverrouiller</button>
+        </div>
+        <p id="authHint" class="muted small"></p>
+      </section>
+
+      <section id="s3Workspace" class="hidden">
+        <section class="s3-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">S3 background jobs</p>
+              <h2>Upload des images vers S3</h2>
+            </div>
+            <div class="s3-actions-inline">
+              <button id="refreshS3JobsBtn" class="secondary-btn" type="button">Actualiser</button>
+              <a class="secondary-btn link-btn" href="/">Retour dashboard</a>
+            </div>
+          </div>
+          <div class="s3-grid">
+            <div class="field-group">
+              <label for="s3DatasetSelect">Source</label>
+              <select id="s3DatasetSelect"></select>
+            </div>
+            <div class="field-group">
+              <label for="s3BucketInput">Bucket</label>
+              <input id="s3BucketInput" type="text" placeholder="my-bucket" />
+            </div>
+            <div class="field-group">
+              <label for="s3PrefixInput">Prefix</label>
+              <input id="s3PrefixInput" type="text" placeholder="fast-fashion/images" />
+            </div>
+            <div class="field-group">
+              <label for="s3LimitInput">Nombre de ressources</label>
+              <input id="s3LimitInput" type="number" min="1" max="10000" value="50" />
+            </div>
+            <div class="field-group">
+              <label for="s3ConcurrencyInput">Multiprocessing</label>
+              <input id="s3ConcurrencyInput" type="number" min="1" max="24" value="4" />
+            </div>
+          </div>
+          <div class="s3-actions">
+            <button id="startS3JobBtn" class="primary-btn" type="button">Lancer l’upload S3</button>
+            <button id="stopS3JobBtn" class="secondary-btn" type="button">Stop job actif</button>
+            <span id="s3ConfigHint" class="muted small"></span>
+          </div>
+        </section>
+
+        <section class="s3-panel">
+          <div class="section-heading">
+            <h2>Jobs en cours et historiques</h2>
+          </div>
+          <div id="s3JobsList" class="s3-jobs-list"></div>
+        </section>
+      </section>
+
+      <div id="s3JobModalBackdrop" class="s3-job-modal-backdrop hidden" aria-hidden="true">
+        <div class="s3-job-modal" role="dialog" aria-modal="true" aria-labelledby="s3JobModalTitle">
+          <aside class="s3-job-modal-sidebar">
+            <div class="s3-job-modal-head">
+              <div>
+                <p class="eyebrow">Détails du job</p>
+                <h2 id="s3JobModalTitle">Job</h2>
+                <span id="s3JobModalStatus" class="job-pill">queued</span>
+              </div>
+              <button id="s3JobModalCloseBtn" class="secondary-btn" type="button">Fermer</button>
+            </div>
+            <div id="s3JobModalSummary" class="s3-job-kpis"></div>
+            <div class="section-heading" style="margin-top: 14px;">
+              <h3>Configuration</h3>
+            </div>
+            <div id="s3JobModalConfig" class="s3-job-details-list"></div>
+          </aside>
+          <main class="s3-job-modal-main">
+            <div class="s3-job-details-page">
+              <div>
+                <h3 style="margin: 0;">Éléments traités</h3>
+                <p class="muted small" style="margin: 6px 0 0;">Par page pour garder la lecture claire.</p>
+              </div>
+              <div class="s3-actions-inline">
+                <button id="s3JobModalPrev" class="secondary-btn" type="button">Précédent</button>
+                <button id="s3JobModalNext" class="secondary-btn" type="button">Suivant</button>
+                <span id="s3JobModalPageLabel" class="muted small"></span>
+              </div>
+            </div>
+            <div id="s3JobModalProgress"></div>
+            <div id="s3JobModalStats" class="s3-job-kpis"></div>
+            <div id="s3JobModalItems" class="s3-job-details-list"></div>
+          </main>
+        </div>
+      </div>
+    </div>
+
+    <script src="./s3.js"></script>
+  </body>
+</html>

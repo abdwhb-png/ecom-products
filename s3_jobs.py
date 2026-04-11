@@ -38,6 +38,7 @@ class S3JobState:
     concurrency: int = 4
     source_filter: str | None = None
     last_message: str | None = None
+    items: list[dict[str, Any]] | None = None
 
 
 class S3JobManager:
@@ -72,6 +73,7 @@ class S3JobManager:
                 total=min(len(rows), max(1, int(limit))),
                 status='running',
                 started_at=time.time(),
+                items=[],
             )
             self._jobs[job_id] = job
             self._locks[job_id] = threading.Event()
@@ -119,7 +121,15 @@ class S3JobManager:
                         result = future.result()
                         with self._mutex:
                             job.processed += 1
-                            if result == 'uploaded':
+                            if isinstance(result, dict):
+                                job.items = (job.items or []) + [result]
+                                if result.get('status') == 'uploaded':
+                                    job.uploaded += 1
+                                elif result.get('status') == 'skipped':
+                                    job.skipped += 1
+                                else:
+                                    job.failed += 1
+                            elif result == 'uploaded':
                                 job.uploaded += 1
                             elif result == 'skipped':
                                 job.skipped += 1
@@ -130,6 +140,11 @@ class S3JobManager:
                             job.processed += 1
                             job.failed += 1
                             job.last_message = str(exc)
+                            job.items = (job.items or []) + [{
+                                'status': 'failed',
+                                'message': str(exc),
+                                'timestamp': time.time(),
+                            }]
             with self._mutex:
                 if job.cancel_requested:
                     job.status = 'cancelled'
@@ -143,38 +158,85 @@ class S3JobManager:
                 job.ended_at = time.time()
 
     def _process_row(self, s3, job: S3JobState, row: dict[str, Any], resolve_source_url, on_uploaded):
+        item = {
+            'timestamp': time.time(),
+            'dataset_id': job.dataset_id,
+            'product_id': str(row.get('id') or ''),
+            'goods_id': str(row.get('goods_id') or row.get('id') or ''),
+            'name': row.get('name') or row.get('title') or '',
+            'source_url': None,
+            'key': None,
+            'status': 'skipped',
+            'message': None,
+        }
         if job.cancel_requested:
-            return 'skipped'
-        source_url = resolve_source_url(row)
-        if not source_url:
-            return 'skipped'
-        key = self._build_key(job, row, source_url)
-        if self._object_exists(s3, job.bucket, key):
-            return 'skipped'
-        content, content_type = self._download(source_url)
-        if not content:
-            return 'failed'
-        s3.put_object(
-            Bucket=job.bucket,
-            Key=key,
-            Body=content,
-            ContentType=content_type or 'application/octet-stream',
-            Metadata={
-                'source_url': source_url,
-                'dataset_id': job.dataset_id,
-                'goods_id': str(row.get('goods_id') or row.get('id') or ''),
-            },
-        )
-        if callable(on_uploaded):
-            on_uploaded(row, source_url, key)
-        return 'uploaded'
+            item['message'] = 'Cancelled before processing'
+            return item
+        raw_candidates = resolve_source_url(row) if callable(resolve_source_url) else None
+        if isinstance(raw_candidates, (list, tuple)):
+            candidates = [str(url).strip() for url in raw_candidates if isinstance(url, str) and url.strip() and str(url).strip().lower().startswith(('http://', 'https://'))]
+        elif isinstance(raw_candidates, str) and raw_candidates.strip() and raw_candidates.strip().lower().startswith(('http://', 'https://')):
+            candidates = [raw_candidates.strip()]
+        else:
+            candidates = []
+        if not candidates:
+            item['message'] = 'No source URL available'
+            return item
+
+        last_error = None
+        for source_url in candidates:
+            item['source_url'] = source_url
+            key = self._build_key(job, row, source_url)
+            item['key'] = key
+            if self._object_exists(s3, job.bucket, key):
+                item['status'] = 'skipped'
+                item['message'] = 'Already exists on S3'
+                return item
+            try:
+                content, content_type = self._download(source_url)
+                if not content:
+                    raise RuntimeError('Empty content')
+                s3.put_object(
+                    Bucket=job.bucket,
+                    Key=key,
+                    Body=content,
+                    ContentType=content_type or 'application/octet-stream',
+                    Metadata={
+                        'source_url': source_url,
+                        'dataset_id': job.dataset_id,
+                        'goods_id': str(row.get('goods_id') or row.get('id') or ''),
+                    },
+                )
+                if callable(on_uploaded):
+                    on_uploaded(row, source_url, key)
+                item['status'] = 'uploaded'
+                item['message'] = 'Uploaded successfully'
+                return item
+            except Exception as exc:
+                last_error = exc
+                item['message'] = f'{type(exc).__name__}: {exc}'
+                continue
+
+        item['status'] = 'failed'
+        item['message'] = f'All candidate URLs failed: {last_error}' if last_error else 'All candidate URLs failed'
+        return item
 
     def _download(self, url: str):
-        req = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urlopen(req, timeout=30) as resp:
-            data = resp.read()
-            content_type = resp.headers.get_content_type()
-        return data, content_type
+        req = Request(url, headers={
+            'User-Agent': 'Mozilla/5.0',
+            'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+            'Connection': 'close',
+        })
+        last_error = None
+        for timeout_seconds in (15, 20):
+            try:
+                with urlopen(req, timeout=timeout_seconds) as resp:
+                    data = resp.read()
+                    content_type = resp.headers.get_content_type()
+                return data, content_type
+            except Exception as exc:
+                last_error = exc
+        raise last_error or RuntimeError('Download failed')
 
     def _object_exists(self, s3, bucket: str, key: str):
         try:

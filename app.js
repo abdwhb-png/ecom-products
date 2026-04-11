@@ -10,7 +10,8 @@ const state = {
   page: Math.max(1, Number.parseInt(query.get('page') || '1', 10) || 1),
   pageSize: Math.max(1, Number.parseInt(query.get('pageSize') || '24', 10) || 24),
   currentPayload: null,
-  s3Jobs: [],
+  categoryPage: 1,
+  categoryPageSize: 24,
 };
 
 const els = {
@@ -34,26 +35,20 @@ const els = {
   categoryCount: document.getElementById('categoryCount'),
   productCardTemplate: document.getElementById('productCardTemplate'),
   activeFilters: document.getElementById('activeFilters'),
-  s3DatasetSelect: document.getElementById('s3DatasetSelect'),
-  s3BucketInput: document.getElementById('s3BucketInput'),
-  s3PrefixInput: document.getElementById('s3PrefixInput'),
-  s3LimitInput: document.getElementById('s3LimitInput'),
-  s3ConcurrencyInput: document.getElementById('s3ConcurrencyInput'),
-  startS3JobBtn: document.getElementById('startS3JobBtn'),
-  stopS3JobBtn: document.getElementById('stopS3JobBtn'),
-  refreshS3JobsBtn: document.getElementById('refreshS3JobsBtn'),
-  s3JobsList: document.getElementById('s3JobsList'),
-  s3ConfigHint: document.getElementById('s3ConfigHint'),
+  datasetLoader: document.getElementById('datasetLoader'),
+  contentLoader: document.getElementById('contentLoader'),
+  contentLoaderTitle: document.getElementById('contentLoaderTitle'),
+  contentLoaderText: document.getElementById('contentLoaderText'),
+  catPrevBtn: document.getElementById('catPrevBtn'),
+  catNextBtn: document.getElementById('catNextBtn'),
+  catPageIndicator: document.getElementById('catPageIndicator'),
 };
 
 async function init() {
   bindEvents();
   syncControlsFromState();
   await loadDatasets();
-  await loadS3Config();
   await refreshUI();
-  await refreshS3Jobs();
-  setInterval(refreshS3Jobs, 5000);
 }
 
 function bindEvents() {
@@ -61,47 +56,82 @@ function bindEvents() {
     state.currentDataset = event.target.value;
     state.category = '';
     state.page = 1;
-    await refreshUI();
+    state.categoryPage = 1;
+    await refreshUI({
+      title: 'Changement de dataset…',
+      text: 'On recharge les catégories et les fiches du catalogue sélectionné.',
+    });
   });
 
   els.searchInput.addEventListener('input', debounce(async (event) => {
     state.search = event.target.value.trim().toLowerCase();
     state.page = 1;
-    await refreshUI();
+    await refreshUI({
+      title: 'Mise à jour des résultats…',
+      text: 'On applique le filtre de recherche et on recharge la page active.',
+    });
   }, 250));
 
   els.categorySelect.addEventListener('change', async (event) => {
     state.category = event.target.value;
     state.page = 1;
-    await refreshUI();
+    await refreshUI({
+      title: 'Mise à jour des résultats…',
+      text: 'La catégorie sélectionnée est en cours de chargement.',
+    });
+  });
+
+  els.catPrevBtn.addEventListener('click', async () => {
+    state.categoryPage = Math.max(1, state.categoryPage - 1);
+    renderCategorySelect(state.currentPayload?.categories || []);
+  });
+
+  els.catNextBtn.addEventListener('click', async () => {
+    state.categoryPage += 1;
+    renderCategorySelect(state.currentPayload?.categories || []);
   });
 
   els.sortSelect.addEventListener('change', async (event) => {
     state.sort = event.target.value;
     state.page = 1;
-    await refreshUI();
+    await refreshUI({
+      title: 'Tri en cours…',
+      text: 'On recalcule la liste avec le nouvel ordre d’affichage.',
+    });
   });
 
   els.imagesOnlyToggle.addEventListener('change', async (event) => {
     state.imagesOnly = event.target.checked;
     state.page = 1;
-    await refreshUI();
+    await refreshUI({
+      title: 'Filtre image…',
+      text: 'On recharge uniquement les produits compatibles avec le filtre actif.',
+    });
   });
 
   els.pageSizeSelect.addEventListener('change', async (event) => {
     state.pageSize = Math.max(1, Number.parseInt(event.target.value, 10) || 24);
     state.page = 1;
-    await refreshUI();
+    await refreshUI({
+      title: 'Changement de pagination…',
+      text: 'On recharge la page active avec la nouvelle taille d’affichage.',
+    });
   });
 
   els.prevPageBtn.addEventListener('click', async () => {
     state.page = Math.max(1, state.page - 1);
-    await refreshUI();
+    await refreshUI({
+      title: 'Navigation de page…',
+      text: 'On charge la page précédente du catalogue.',
+    });
   });
 
   els.nextPageBtn.addEventListener('click', async () => {
     state.page += 1;
-    await refreshUI();
+    await refreshUI({
+      title: 'Navigation de page…',
+      text: 'On charge la page suivante du catalogue.',
+    });
   });
 
   els.resetFiltersBtn.addEventListener('click', async () => {
@@ -112,25 +142,29 @@ function bindEvents() {
     state.page = 1;
     state.pageSize = 24;
     syncControlsFromState();
-    await refreshUI();
+    await refreshUI({
+      title: 'Réinitialisation…',
+      text: 'On remet le catalogue dans son état de départ.',
+    });
   });
 
-  els.startS3JobBtn.addEventListener('click', startS3Job);
-  els.stopS3JobBtn.addEventListener('click', stopActiveS3Job);
-  els.refreshS3JobsBtn.addEventListener('click', refreshS3Jobs);
 }
 
 async function loadDatasets() {
   updateStatus('Chargement des datasets…', 'info');
-  const response = await fetch('/api/datasets');
-  if (!response.ok) throw new Error(`Impossible de charger les datasets (${response.status})`);
-  const payload = await response.json();
-  state.datasets = (payload.datasets || []).filter((dataset) => ['shein', 'asos'].includes(dataset.id));
-  if (!state.datasets.find((dataset) => dataset.id === state.currentDataset) && state.datasets.length) {
-    state.currentDataset = state.datasets[0].id;
+  els.datasetLoader.classList.remove('hidden');
+  try {
+    const response = await fetch('/api/datasets');
+    if (!response.ok) throw new Error(`Impossible de charger les datasets (${response.status})`);
+    const payload = await response.json();
+    state.datasets = (payload.datasets || []).filter((dataset) => ['shein', 'asos'].includes(dataset.id));
+    if (!state.datasets.find((dataset) => dataset.id === state.currentDataset) && state.datasets.length) {
+      state.currentDataset = state.datasets[0].id;
+    }
+    hydrateDatasetSelect();
+  } finally {
+    els.datasetLoader.classList.add('hidden');
   }
-  hydrateDatasetSelect();
-  hydrateS3DatasetSelect();
 }
 
 function hydrateDatasetSelect() {
@@ -141,14 +175,6 @@ function hydrateDatasetSelect() {
   els.datasetSelect.value = state.currentDataset;
 }
 
-function hydrateS3DatasetSelect() {
-  const options = state.datasets
-    .map((dataset) => `<option value="${dataset.id}">${escapeHtml(dataset.label)}</option>`)
-    .join('');
-  els.s3DatasetSelect.innerHTML = options;
-  els.s3DatasetSelect.value = state.currentDataset;
-}
-
 function syncControlsFromState() {
   els.searchInput.value = state.search;
   els.sortSelect.value = state.sort;
@@ -156,13 +182,25 @@ function syncControlsFromState() {
   els.pageSizeSelect.value = String(state.pageSize);
 }
 
-async function refreshUI() {
+async function refreshUI(options = {}) {
+  const loadingTitle = options.title || 'Chargement des produits…';
+  const loadingText = options.text || 'On rafraîchit le catalogue et les visuels.';
   syncControlsFromState();
-  updateStatus('Chargement des produits…', 'info');
-  const payload = await fetchProducts();
-  state.currentPayload = payload;
-  render(payload);
-  updateStatus('Catalogue chargé localement.', 'success');
+  updateStatus(loadingTitle, 'info');
+  setContentLoading(true, loadingTitle, loadingText);
+  els.datasetLoader.classList.remove('hidden');
+  try {
+    const payload = await fetchProducts();
+    state.currentPayload = payload;
+    render(payload);
+    updateStatus('Catalogue chargé localement.', 'success');
+  } catch (error) {
+    console.error(error);
+    updateStatus(`Erreur: ${error.message}`, 'error');
+  } finally {
+    els.datasetLoader.classList.add('hidden');
+    setContentLoading(false);
+  }
 }
 
 async function fetchProducts() {
@@ -183,102 +221,44 @@ async function fetchProducts() {
   return payload;
 }
 
-async function loadS3Config() {
-  try {
-    const response = await fetch('/api/s3/config');
-    if (!response.ok) return;
-    const payload = await response.json();
-    const config = payload.data || {};
-    els.s3BucketInput.value = config.bucket || '';
-    els.s3PrefixInput.value = config.prefix || '';
-    els.s3ConfigHint.textContent = config.bucket ? `Config chargée: ${config.bucket}` : 'Ajoute un bucket S3 pour lancer des jobs.';
-  } catch (error) {
-    console.warn(error);
-  }
-}
-
-async function refreshS3Jobs() {
-  try {
-    const response = await fetch('/api/s3/jobs');
-    if (!response.ok) return;
-    const payload = await response.json();
-    state.s3Jobs = payload.data || [];
-    renderS3Jobs(state.s3Jobs);
-  } catch (error) {
-    console.warn(error);
-  }
-}
-
-function renderS3Jobs(jobs) {
-  if (!jobs.length) {
-    els.s3JobsList.innerHTML = '<div class="s3-job-empty">Aucun job S3 pour le moment.</div>';
-    return;
-  }
-  els.s3JobsList.innerHTML = jobs.map((job) => `
-    <article class="s3-job-card">
-      <div class="s3-job-header">
-        <strong>${escapeHtml(job.job_id)}</strong>
-        <span class="job-pill job-${escapeHtml(job.status || 'queued')}">${escapeHtml(job.status || 'queued')}</span>
-      </div>
-      <div class="s3-job-meta">
-        <span>${escapeHtml(job.dataset_id || '')}</span>
-        <span>${job.processed || 0}/${job.total || 0} traités</span>
-        <span>Uploadés: ${job.uploaded || 0}</span>
-        <span>Ignorés: ${job.skipped || 0}</span>
-        <span>Erreurs: ${job.failed || 0}</span>
-      </div>
-    </article>
-  `).join('');
-}
-
-async function startS3Job() {
-  const body = {
-    dataset_id: els.s3DatasetSelect.value,
-    bucket: els.s3BucketInput.value.trim(),
-    prefix: els.s3PrefixInput.value.trim(),
-    limit: Number.parseInt(els.s3LimitInput.value, 10) || 50,
-    concurrency: Number.parseInt(els.s3ConcurrencyInput.value, 10) || 4,
-  };
-  const response = await fetch('/api/s3/jobs', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) throw new Error(`Impossible de lancer le job S3 (${response.status})`);
-  await refreshS3Jobs();
-}
-
-async function stopActiveS3Job() {
-  const active = state.s3Jobs.find((job) => ['running', 'queued', 'cancel_requested'].includes(job.status));
-  if (!active) return;
-  await fetch(`/api/s3/jobs/${encodeURIComponent(active.job_id)}/cancel`, { method: 'POST' });
-  await refreshS3Jobs();
-}
 
 function render(payload) {
   const dataset = payload.dataset;
   const products = payload.products || [];
   const categories = payload.categories || [];
+  state.currentPayload = payload;
   const pagination = payload.pagination || { page: 1, totalPages: 1, total: 0, from: 0, to: 0 };
 
   els.activeDatasetLabel.textContent = dataset?.label || '—';
   els.resultsCount.textContent = new Intl.NumberFormat('fr-FR').format(pagination.total || 0);
   els.categoryCount.textContent = new Intl.NumberFormat('fr-FR').format(categories.length);
 
-  fillCategorySelect(categories);
+  renderCategorySelect(categories);
   renderSummary(dataset, categories, pagination);
   renderActiveFilters();
   renderPagination(pagination);
   renderProducts(products);
 }
 
-function fillCategorySelect(categories) {
+function renderCategorySelect(categories) {
+  const pageSize = state.categoryPageSize;
+  const totalPages = Math.max(1, Math.ceil((categories.length || 0) / pageSize));
+  state.categoryPage = Math.min(state.categoryPage, totalPages);
+  const start = (state.categoryPage - 1) * pageSize;
+  const pageCategories = categories.slice(start, start + pageSize);
   const options = ['<option value="">Toutes les catégories</option>']
-    .concat(categories.map((category) => `<option value="${escapeHtml(category.name)}">${escapeHtml(category.name)} (${category.count})</option>`))
+    .concat(pageCategories.map((category) => {
+      const label = `${truncate(category.name, 32)} (${category.count})`;
+      return `<option value="${escapeHtml(category.name)}" title="${escapeHtml(category.name)}">${escapeHtml(label)}</option>`;
+    }))
     .join('');
   els.categorySelect.innerHTML = options;
-  els.categorySelect.value = categories.some((item) => item.name === state.category) ? state.category : '';
-  if (!categories.some((item) => item.name === state.category)) state.category = '';
+  const categoryExists = categories.some((item) => item.name === state.category);
+  els.categorySelect.value = categoryExists ? state.category : '';
+  if (!categoryExists) state.category = '';
+  els.catPageIndicator.textContent = `${state.categoryPage} / ${totalPages}`;
+  els.catPrevBtn.disabled = state.categoryPage <= 1;
+  els.catNextBtn.disabled = state.categoryPage >= totalPages;
 }
 
 function renderSummary(dataset, categories, pagination) {
@@ -339,6 +319,7 @@ function renderProducts(products) {
     const price = node.querySelector('.product-price');
     const title = node.querySelector('.product-title');
     const description = node.querySelector('.product-description');
+    const highlights = node.querySelector('.product-highlights');
     const meta = node.querySelector('.product-meta');
     const link = node.querySelector('.product-link');
     const prevBtn = node.querySelector('.carousel-btn-prev');
@@ -383,20 +364,30 @@ function renderProducts(products) {
       mediaWrap.classList.add('no-image');
     }
 
+    const highlightEntries = [
+      product.brand && { label: 'Brand', value: product.brand },
+      product.color && { label: 'Couleur', value: product.color },
+      (product.rating !== undefined && product.rating !== null && product.rating !== '') && { label: 'Note', value: product.rating },
+      Number(product.reviews_count) > 0 && { label: 'Avis', value: product.reviews_count },
+      images.length > 0 && { label: 'Images', value: images.length },
+      product.saved_on_s3 && { label: 'S3', value: 'Oui' },
+    ].filter(Boolean);
+
+    highlights.innerHTML = highlightEntries
+      .slice(0, 4)
+      .map((item) => `<span class="highlight-pill"><strong>${escapeHtml(item.label)}</strong> ${escapeHtml(String(item.value))}</span>`)
+      .join('');
+
     const metaEntries = [
-      ['Brand', product.brand || '—'],
-      ['Couleur', product.color || '—'],
       ['Tailles', (product.sizes || []).join(', ') || product.size_text || '—'],
-      ['Images', product.image_count ?? images.length ?? 0],
-      ['Avis', product.reviews_count ?? '—'],
-      ['Note', product.rating ?? '—'],
       ['Source', product.source || '—'],
       ['S3', product.saved_on_s3 ? 'Oui' : 'Non'],
+      ['SKU', product.sku || product.id || '—'],
     ];
 
     meta.innerHTML = metaEntries
       .filter(([, value]) => value !== '' && value !== null && value !== undefined && value !== '—')
-      .slice(0, 8)
+      .slice(0, 6)
       .map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd>`)
       .join('');
 
@@ -418,6 +409,14 @@ function renderProducts(products) {
 function updateStatus(message, tone = 'info') {
   els.statusBanner.className = `status-banner ${tone}`;
   els.statusBanner.textContent = message;
+}
+
+function setContentLoading(isLoading, title, text) {
+  if (!els.contentLoader) return;
+  els.contentLoader.classList.toggle('hidden', !isLoading);
+  if (els.contentLoaderTitle && title) els.contentLoaderTitle.textContent = title;
+  if (els.contentLoaderText && text) els.contentLoaderText.textContent = text;
+  els.productGrid.setAttribute('aria-busy', String(isLoading));
 }
 
 function truncate(value, maxLength = 180) {

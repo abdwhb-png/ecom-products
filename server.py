@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import math
 import os
@@ -21,6 +23,7 @@ from s3_jobs import S3JobManager
 ROOT = Path(__file__).resolve().parent
 DB_PATH = ROOT / 'catalog.db'
 DOCS_PATH = ROOT / 'docs.html'
+S3_PAGE_PATH = ROOT / 's3.html'
 S3_STATE_PATH = ROOT / 's3_state.json'
 ALLOWED_DATASETS = {'shein', 'asos'}
 DEFAULT_PAGE_SIZE = 24
@@ -47,6 +50,30 @@ CORS_HEADERS = {
     'Referrer-Policy': 'no-referrer',
     'X-Frame-Options': 'DENY',
 }
+S3_PASSWORD = os.getenv('FAST_FASHION_S3_PASSWORD', '').strip()
+S3_AUTH_TOKENS: dict[str, float] = {}
+S3_AUTH_TTL_SECONDS = 60 * 60
+
+
+def _env_nonempty(*names: str) -> str:
+    for name in names:
+        value = os.getenv(name, '').strip()
+        if value:
+            return value
+    return ''
+
+
+def resolve_s3_region(endpoint_url: str | None = None, explicit_region: str | None = None) -> str | None:
+    region = (explicit_region or '').strip()
+    if region:
+        return region
+    endpoint = (endpoint_url or '').strip().lower()
+    if 'r2.cloudflarestorage.com' in endpoint:
+        return 'auto'
+    env_region = _env_nonempty('AWS_REGION', 'AWS_DEFAULT_REGION', 'S3_REGION')
+    if env_region:
+        return env_region
+    return 'us-east-1' if endpoint else None
 
 OPENAPI_SPEC = {
     'openapi': '3.1.0',
@@ -63,6 +90,7 @@ OPENAPI_SPEC = {
         '/api/products': {'get': {'summary': 'List products'}},
         '/api/products/{goods_id}': {'get': {'summary': 'Get product'}},
         '/api/s3/jobs': {'get': {'summary': 'List jobs'}, 'post': {'summary': 'Create job'}},
+        '/api/s3/jobs/{job_id}': {'get': {'summary': 'Get job detail'}},
         '/api/s3/jobs/{job_id}/cancel': {'post': {'summary': 'Cancel job'}},
         '/api/s3/config': {'get': {'summary': 'Get S3 config'}, 'post': {'summary': 'Update S3 config'}},
     },
@@ -147,6 +175,42 @@ def html_response(handler, content: bytes, status=HTTPStatus.OK):
 
 def error_response(handler, message, status=HTTPStatus.BAD_REQUEST, code='bad_request'):
     json_response(handler, {'error': {'code': code, 'message': message}}, status=status)
+
+
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode('utf-8')).hexdigest()
+
+
+def issue_s3_token() -> str:
+    raw = f'{os.getpid()}:{time.time()}:{os.urandom(24).hex()}'
+    token = hashlib.sha256(raw.encode('utf-8')).hexdigest()
+    S3_AUTH_TOKENS[token] = time.time() + S3_AUTH_TTL_SECONDS
+    return token
+
+
+def token_is_valid(token: str | None) -> bool:
+    if not token:
+        return False
+    expiry = S3_AUTH_TOKENS.get(token)
+    if not expiry:
+        return False
+    if expiry < time.time():
+        S3_AUTH_TOKENS.pop(token, None)
+        return False
+    return True
+
+
+def auth_required(handler) -> bool:
+    cookie = handler.headers.get('Cookie', '') or ''
+    token = None
+    for chunk in cookie.split(';'):
+        chunk = chunk.strip()
+        if chunk.startswith('ff_s3_auth='):
+            token = chunk.split('=', 1)[1]
+            break
+    if token_is_valid(token):
+        return True
+    return False
 
 
 def parse_positive_int(value, default, minimum=1, maximum=None):
@@ -283,6 +347,21 @@ class Handler(SimpleHTTPRequestHandler):
             if parsed.path == '/docs':
                 content = DOCS_PATH.read_bytes()
                 return html_response(self, content)
+            if parsed.path == '/s3':
+                content = S3_PAGE_PATH.read_bytes()
+                return html_response(self, content)
+            if parsed.path == '/api/openapi.json':
+                return json_response(self, OPENAPI_SPEC)
+            if parsed.path == '/api/s3/auth-check':
+                return json_response(self, {'data': {'authenticated': auth_required(self)}})
+            if parsed.path == '/api/s3/config' and not auth_required(self):
+                return error_response(self, 'Authentication required', HTTPStatus.UNAUTHORIZED, code='unauthorized')
+            if parsed.path == '/api/s3/jobs' and not auth_required(self):
+                return error_response(self, 'Authentication required', HTTPStatus.UNAUTHORIZED, code='unauthorized')
+            if parsed.path.startswith('/api/s3/jobs/') and not auth_required(self):
+                return error_response(self, 'Authentication required', HTTPStatus.UNAUTHORIZED, code='unauthorized')
+            if parsed.path == '/api/s3/auth':
+                return self.handle_s3_auth()
             if parsed.path == '/api/openapi.json':
                 return json_response(self, OPENAPI_SPEC)
             if parsed.path == '/api/datasets':
@@ -299,6 +378,9 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.handle_product(goods_id, parsed.query)
             if parsed.path == '/api/s3/jobs':
                 return self.handle_s3_jobs_list()
+            if parsed.path.startswith('/api/s3/jobs/'):
+                job_id = parsed.path.split('/api/s3/jobs/', 1)[1].strip('/')
+                return self.handle_s3_job_detail(job_id)
             if parsed.path == '/api/s3/config':
                 return self.handle_s3_config_get()
             return super().do_GET()
@@ -315,6 +397,8 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             if parsed.path == '/api/s3/jobs':
                 return self.handle_s3_jobs_create()
+            if parsed.path == '/api/s3/auth':
+                return self.handle_s3_auth()
             if parsed.path.startswith('/api/s3/jobs/') and parsed.path.endswith('/cancel'):
                 job_id = parsed.path.split('/api/s3/jobs/', 1)[1].rsplit('/cancel', 1)[0].strip('/')
                 return self.handle_s3_job_cancel(job_id)
@@ -585,12 +669,45 @@ class Handler(SimpleHTTPRequestHandler):
             return error_response(self, f'Product not found: {goods_id}', HTTPStatus.NOT_FOUND, code='not_found')
         json_response(self, {'dataset': dict(dataset_row), 'data': self._product_resource(row, dataset_row, get_base_url(self))})
 
+    def handle_s3_auth(self):
+        payload = self._read_json_body()
+        if not S3_PASSWORD:
+            token = issue_s3_token()
+            body = json.dumps({'data': {'authenticated': True, 'expires_in_seconds': S3_AUTH_TTL_SECONDS}}, ensure_ascii=False).encode('utf-8')
+            self.send_response(HTTPStatus.OK)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Set-Cookie', f'ff_s3_auth={token}; Max-Age={S3_AUTH_TTL_SECONDS}; Path=/; HttpOnly; SameSite=Strict')
+            self.send_header('Content-Length', str(len(body)))
+            for key, value in CORS_HEADERS.items():
+                self.send_header(key, value)
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        password = str(payload.get('password') or '')
+        if not hmac.compare_digest(hash_password(password), hash_password(S3_PASSWORD)):
+            return error_response(self, 'Invalid password', HTTPStatus.UNAUTHORIZED, code='unauthorized')
+        token = issue_s3_token()
+        body = json.dumps({'data': {'authenticated': True, 'expires_in_seconds': S3_AUTH_TTL_SECONDS}}, ensure_ascii=False).encode('utf-8')
+        self.send_response(HTTPStatus.OK)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Set-Cookie', f'ff_s3_auth={token}; Max-Age={S3_AUTH_TTL_SECONDS}; Path=/; HttpOnly; SameSite=Strict')
+        self.send_header('Content-Length', str(len(body)))
+        for key, value in CORS_HEADERS.items():
+            self.send_header(key, value)
+        self.end_headers()
+        self.wfile.write(body)
+
     def handle_s3_config_get(self):
         load_s3_state()
         config = dict(S3_STATE.get('config', {}))
         config.pop('aws_access_key_id', None)
         config.pop('aws_secret_access_key', None)
         config.pop('aws_session_token', None)
+        if not config.get('bucket'):
+            config['bucket'] = _env_nonempty('S3_BUCKET')
+        if not config.get('endpoint_url'):
+            config['endpoint_url'] = _env_nonempty('S3_ENDPOINT_URL')
+        config['region_name'] = resolve_s3_region(config.get('endpoint_url'), config.get('region_name'))
         json_response(self, {'data': config})
 
     def handle_s3_config_update(self):
@@ -606,10 +723,16 @@ class Handler(SimpleHTTPRequestHandler):
         json_response(self, {'data': config})
 
     def handle_s3_jobs_list(self):
+        load_s3_state()
         config = dict(S3_STATE.get('config', {}))
         config.pop('aws_access_key_id', None)
         config.pop('aws_secret_access_key', None)
         config.pop('aws_session_token', None)
+        if not config.get('bucket'):
+            config['bucket'] = _env_nonempty('S3_BUCKET')
+        if not config.get('endpoint_url'):
+            config['endpoint_url'] = _env_nonempty('S3_ENDPOINT_URL')
+        config['region_name'] = resolve_s3_region(config.get('endpoint_url'), config.get('region_name'))
         json_response(self, {'data': S3_JOB_MANAGER.list_jobs(), 'config': config})
 
     def handle_s3_jobs_create(self):
@@ -618,7 +741,7 @@ class Handler(SimpleHTTPRequestHandler):
         source = (payload.get('source') or 'products').strip().lower()
         limit = parse_positive_int(payload.get('limit', 100), 100)
         concurrency = parse_positive_int(payload.get('concurrency', 4), 4, maximum=24)
-        bucket = (payload.get('bucket') or S3_STATE.get('config', {}).get('bucket') or '').strip()
+        bucket = (payload.get('bucket') or S3_STATE.get('config', {}).get('bucket') or _env_nonempty('S3_BUCKET') or '').strip()
         prefix = (payload.get('prefix') or S3_STATE.get('config', {}).get('prefix') or '').strip()
         if dataset_id not in ALLOWED_DATASETS:
             raise ValueError(f'Unknown dataset: {dataset_id}')
@@ -632,6 +755,9 @@ class Handler(SimpleHTTPRequestHandler):
         load_s3_state()
         config = dict(S3_STATE.get('config', {}))
         config.update({k: v for k, v in payload.items() if k in {'region_name', 'endpoint_url'}})
+        if not config.get('endpoint_url'):
+            config['endpoint_url'] = _env_nonempty('S3_ENDPOINT_URL')
+        config['region_name'] = resolve_s3_region(config.get('endpoint_url'), config.get('region_name'))
         config['bucket'] = bucket
         config['prefix'] = prefix
         for secret_key in ('aws_access_key_id', 'aws_secret_access_key', 'aws_session_token'):
@@ -641,20 +767,39 @@ class Handler(SimpleHTTPRequestHandler):
 
         def s3_client_factory():
             import boto3
+            from botocore.config import Config
+
             env_access_key = os.getenv('AWS_ACCESS_KEY_ID') or os.getenv('AWS_ACCESS_KEY')
             env_secret_key = os.getenv('AWS_SECRET_ACCESS_KEY') or os.getenv('AWS_SECRET_KEY')
+            endpoint_url = config.get('endpoint_url') or None
             env_session_token = os.getenv('AWS_SESSION_TOKEN')
+            if endpoint_url and 'r2.cloudflarestorage.com' in endpoint_url.lower():
+                env_session_token = None
             session = boto3.session.Session(
                 aws_access_key_id=env_access_key or None,
                 aws_secret_access_key=env_secret_key or None,
                 aws_session_token=env_session_token or None,
-                region_name=(config.get('region_name') or os.getenv('AWS_REGION') or os.getenv('AWS_DEFAULT_REGION') or None),
+                region_name=resolve_s3_region(endpoint_url, config.get('region_name')),
             )
-            return session.client('s3', endpoint_url=config.get('endpoint_url') or None)
+            client_kwargs = {
+                'endpoint_url': config.get('endpoint_url') or None,
+            }
+            if config.get('endpoint_url'):
+                client_kwargs['config'] = Config(s3={'addressing_style': 'path'})
+            return session.client('s3', **client_kwargs)
 
         def resolve_source_url(row):
-            urls = [u for u in ([row.get('image')] + parse_json_list(row.get('image_urls_json'))) if isinstance(u, str) and u.strip()]
-            return urls[0] if urls else row.get('url')
+            candidates = []
+            for url in [row.get('image')] + parse_json_list(row.get('image_urls_json')):
+                if not isinstance(url, str):
+                    continue
+                cleaned = url.strip()
+                if not cleaned:
+                    continue
+                lowered = cleaned.lower()
+                if lowered.startswith(('http://', 'https://')):
+                    candidates.append(cleaned)
+            return candidates
 
         def on_uploaded(row, source_url, key):
             load_s3_state()
@@ -692,6 +837,29 @@ class Handler(SimpleHTTPRequestHandler):
         if not S3_JOB_MANAGER.cancel_job(job_id):
             return error_response(self, f'Job not found: {job_id}', HTTPStatus.NOT_FOUND, code='not_found')
         json_response(self, {'data': S3_JOB_MANAGER.get_job(job_id)}, status=HTTPStatus.ACCEPTED)
+
+    def handle_s3_job_detail(self, job_id):
+        load_s3_state()
+        job = S3_JOB_MANAGER.get_job(job_id)
+        if not job:
+            return error_response(self, f'Job not found: {job_id}', HTTPStatus.NOT_FOUND, code='not_found')
+        query = parse_qs(urlparse(self.path).query)
+        page = parse_positive_int((query.get('page') or ['1'])[0], 1)
+        page_size = parse_positive_int((query.get('page_size') or ['12'])[0], 12, maximum=50)
+        items = list(job.get('items') or [])
+        total_items = len(items)
+        start = (page - 1) * page_size
+        end = start + page_size
+        json_response(self, {
+            'data': {
+                'job': job,
+                'items': items[start:end],
+                'page': page,
+                'page_size': page_size,
+                'total_items': total_items,
+                'total_pages': max(1, math.ceil(total_items / page_size)) if total_items else 1,
+            }
+        })
 
 
 def find_available_port(host: str, preferred_port: int, attempts: int = 20) -> int:
