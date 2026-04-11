@@ -222,11 +222,29 @@ class S3JobManager:
         return item
 
     def _download(self, url: str):
-        req = Request(url, headers={
-            'User-Agent': 'Mozilla/5.0',
+        parsed = urlparse(url)
+        referer = f'{parsed.scheme}://{parsed.netloc}/' if parsed.scheme and parsed.netloc else None
+        hostname = (parsed.hostname or '').lower()
+        if hostname.endswith('asos-media.com'):
+            referer = 'https://www.asos.com/'
+        elif hostname.endswith('ltwebstatic.com'):
+            referer = 'https://us.shein.com/'
+
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
             'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache',
+            'Sec-Fetch-Dest': 'image',
+            'Sec-Fetch-Mode': 'no-cors',
+            'Sec-Fetch-Site': 'cross-site',
             'Connection': 'close',
-        })
+        }
+        if referer:
+            headers['Referer'] = referer
+
+        req = Request(url, headers=headers)
         last_error = None
         for timeout_seconds in (15, 20):
             try:
