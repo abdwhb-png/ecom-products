@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from s3_jobs import S3JobManager
 
@@ -540,6 +540,17 @@ class Handler(SimpleHTTPRequestHandler):
             's3_url': s3_url,
         }
 
+    def _legacy_product_payload(self, row, dataset_row, base_url, resource_product=None):
+        product = resource_product or self._product_resource(row, dataset_row, base_url)
+        legacy = dict(row)
+        legacy['sizes'] = parse_json_list(legacy.pop('sizes_json') or '[]')
+        legacy['imageUrls'] = parse_json_list(legacy.pop('image_urls_json') or '[]')
+        legacy['image_ok'] = bool(legacy.get('image_ok'))
+        legacy['goods_id'] = product['goods_id']
+        legacy['saved_on_s3'] = product['saved_on_s3']
+        legacy['s3_url'] = product['s3_url']
+        return legacy
+
     def handle_datasets(self, query_string):
         params = parse_qs(query_string)
         dataset_id = (params.get('dataset', [''])[0] or '').strip().lower()
@@ -643,16 +654,7 @@ class Handler(SimpleHTTPRequestHandler):
             json_response(self, {'dataset': dict(dataset_row), 'data': resource_products, 'pagination': {'page': page, 'pageSize': page_size, 'total': total, 'totalPages': total_pages, 'from': 0 if total == 0 else offset + 1, 'to': min(offset + page_size, total)}, 'categories': [self._category_resource(row) | {'count': row['count']} for row in category_rows if row['name']]})
             return
 
-        legacy_products = []
-        for row, product in zip(product_rows, resource_products):
-            legacy = dict(row)
-            legacy['sizes'] = parse_json_list(legacy.pop('sizes_json') or '[]')
-            legacy['imageUrls'] = parse_json_list(legacy.pop('image_urls_json') or '[]')
-            legacy['image_ok'] = bool(legacy.get('image_ok'))
-            legacy['goods_id'] = product['goods_id']
-            legacy['saved_on_s3'] = product['saved_on_s3']
-            legacy['s3_url'] = product['s3_url']
-            legacy_products.append(legacy)
+        legacy_products = [self._legacy_product_payload(row, dataset_row, base_url, product) for row, product in zip(product_rows, resource_products)]
 
         json_response(self, {'dataset': dict(dataset_row), 'products': legacy_products, 'pagination': {'page': page, 'pageSize': page_size, 'total': total, 'totalPages': total_pages, 'from': 0 if total == 0 else offset + 1, 'to': min(offset + page_size, total)}, 'categories': [{'name': row['name'], 'count': row['count']} for row in category_rows if row['name']]})
 
@@ -661,13 +663,23 @@ class Handler(SimpleHTTPRequestHandler):
         dataset_id = (params.get('dataset', ['shein'])[0] or 'shein').strip().lower()
         if dataset_id not in ALLOWED_DATASETS:
             raise ValueError(f'Unknown dataset: {dataset_id}')
+        requested_id = unquote(str(goods_id or '')).strip()
+        product_id = requested_id.split(':', 1)[1] if ':' in requested_id else requested_id
         conn = db_connect()
         dataset_row = self._dataset_row(conn, dataset_id)
-        row = conn.execute('SELECT * FROM products WHERE dataset_id = ? AND id = ?', (dataset_id, goods_id)).fetchone()
+        row = conn.execute('SELECT * FROM products WHERE dataset_id = ? AND id = ?', (dataset_id, product_id)).fetchone()
         conn.close()
         if not row:
             return error_response(self, f'Product not found: {goods_id}', HTTPStatus.NOT_FOUND, code='not_found')
-        json_response(self, {'dataset': dict(dataset_row), 'data': self._product_resource(row, dataset_row, get_base_url(self))})
+        base_url = get_base_url(self)
+        product_resource = self._product_resource(row, dataset_row, base_url)
+        product_display = self._legacy_product_payload(row, dataset_row, base_url, product_resource)
+        json_response(self, {
+            'dataset': dict(dataset_row),
+            'display': product_display,
+            'api': product_resource,
+            'data': product_resource,
+        })
 
     def handle_s3_auth(self):
         payload = self._read_json_body()

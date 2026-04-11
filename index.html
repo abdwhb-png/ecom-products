@@ -129,7 +129,7 @@
       <main class="product-stage">
         <section class="intro-note">
           <p>
-            Astuce : utilise la recherche + le filtre image pour isoler rapidement les fiches exploitables, puis ouvre la source produit dans un nouvel onglet.
+            Astuce : utilise la recherche + le filtre image pour isoler rapidement les fiches exploitables, puis ouvre le modal JSON ou la source d’origine à la demande.
           </p>
         </section>
         <div id="contentLoader" class="content-loader hidden" aria-live="polite" aria-busy="true">
@@ -165,15 +165,54 @@
             <span class="product-price"></span>
           </div>
           <h3 class="product-title"></h3>
+          <p class="product-identity"></p>
           <p class="product-description"></p>
           <div class="product-highlights" aria-label="Faits rapides"></div>
           <dl class="product-meta"></dl>
           <div class="product-actions">
-            <a class="product-link" target="_blank" rel="noopener noreferrer">Voir la fiche produit</a>
+            <button class="product-inspect-btn" type="button">Voir la fiche produit</button>
+            <a class="product-source-link" target="_blank" rel="noopener noreferrer" aria-label="Ouvrir l’URL d’origine" title="Ouvrir l’URL d’origine">
+              <span aria-hidden="true">↗</span>
+            </a>
           </div>
         </div>
       </article>
     </template>
+
+    <div id="productModalBackdrop" class="product-modal-backdrop hidden" aria-hidden="true">
+      <div class="product-modal" role="dialog" aria-modal="true" aria-labelledby="productModalTitle">
+        <aside class="product-modal-sidebar">
+          <div class="product-modal-head">
+            <div>
+              <p class="eyebrow">Fiche produit</p>
+              <h2 id="productModalTitle">Produit</h2>
+              <p id="productModalSubtitle" class="product-modal-subtitle">Chargement…</p>
+            </div>
+            <button id="productModalCloseBtn" class="secondary-btn" type="button">Fermer</button>
+          </div>
+          <div id="productModalMeta" class="product-modal-meta"></div>
+          <div id="productModalStatus" class="product-modal-status">Chargement des détails…</div>
+        </aside>
+        <main class="product-modal-main">
+          <div class="product-modal-json-grid">
+            <section class="product-json-panel">
+              <div class="product-json-head">
+                <p class="eyebrow">Version dashboard</p>
+                <strong>JSON d’affichage</strong>
+              </div>
+              <pre id="productModalDisplayJson" class="product-json-content">Chargement…</pre>
+            </section>
+            <section class="product-json-panel">
+              <div class="product-json-head">
+                <p class="eyebrow">Version API</p>
+                <strong>JSON ressource</strong>
+              </div>
+              <pre id="productModalApiJson" class="product-json-content">Chargement…</pre>
+            </section>
+          </div>
+        </main>
+      </div>
+    </div>
 
     <script src="./app.js"></script>
   </body>
