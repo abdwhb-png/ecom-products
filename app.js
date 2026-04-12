@@ -407,6 +407,59 @@ async function openProductModal(product) {
   }
 }
 
+function ensureProductCardControls(node) {
+  const card = node.querySelector('.product-card');
+  const body = node.querySelector('.product-body');
+  const title = node.querySelector('.product-title');
+  const description = node.querySelector('.product-description');
+  let identity = node.querySelector('.product-identity');
+  let actions = node.querySelector('.product-actions');
+  let inspectBtn = node.querySelector('.product-inspect-btn');
+  let sourceLink = node.querySelector('.product-source-link');
+
+  if (!identity && description && description.parentNode) {
+    identity = document.createElement('p');
+    identity.className = 'product-identity';
+    description.parentNode.insertBefore(identity, description);
+  }
+
+  if (!actions && body) {
+    actions = document.createElement('div');
+    actions.className = 'product-actions';
+    body.appendChild(actions);
+  }
+
+  if (!inspectBtn && actions) {
+    inspectBtn = document.createElement('button');
+    inspectBtn.type = 'button';
+    inspectBtn.className = 'product-inspect-btn';
+    inspectBtn.textContent = 'Voir la fiche produit';
+    actions.appendChild(inspectBtn);
+  }
+
+  if (!sourceLink && actions) {
+    const legacyLink = node.querySelector('.product-link');
+    if (legacyLink) {
+      legacyLink.className = 'product-source-link';
+      legacyLink.setAttribute('aria-label', 'Ouvrir l’URL d’origine');
+      legacyLink.setAttribute('title', 'Ouvrir l’URL d’origine');
+      legacyLink.innerHTML = '<span aria-hidden="true">↗</span>';
+      sourceLink = legacyLink;
+    } else {
+      sourceLink = document.createElement('a');
+      sourceLink.className = 'product-source-link';
+      sourceLink.target = '_blank';
+      sourceLink.rel = 'noopener noreferrer';
+      sourceLink.setAttribute('aria-label', 'Ouvrir l’URL d’origine');
+      sourceLink.setAttribute('title', 'Ouvrir l’URL d’origine');
+      sourceLink.innerHTML = '<span aria-hidden="true">↗</span>';
+      actions.appendChild(sourceLink);
+    }
+  }
+
+  return { card, title, identity, description, inspectBtn, sourceLink };
+}
+
 function renderProducts(products) {
   els.productGrid.innerHTML = '';
 
@@ -420,46 +473,47 @@ function renderProducts(products) {
 
   products.forEach((product) => {
     const node = els.productCardTemplate.content.cloneNode(true);
-    const card = node.querySelector('.product-card');
+    const controls = ensureProductCardControls(node);
+    const card = controls.card;
     const mediaWrap = node.querySelector('.product-media-wrap');
     const img = node.querySelector('.product-media');
     const sourceBadge = node.querySelector('.badge-source');
     const categoryBadge = node.querySelector('.badge-category');
     const price = node.querySelector('.product-price');
-    const title = node.querySelector('.product-title');
-    const identity = node.querySelector('.product-identity');
-    const description = node.querySelector('.product-description');
+    const title = controls.title;
+    const identity = controls.identity;
+    const description = controls.description;
     const highlights = node.querySelector('.product-highlights');
     const meta = node.querySelector('.product-meta');
-    const inspectBtn = node.querySelector('.product-inspect-btn');
-    const sourceLink = node.querySelector('.product-source-link');
+    const inspectBtn = controls.inspectBtn;
+    const sourceLink = controls.sourceLink;
     const prevBtn = node.querySelector('.carousel-btn-prev');
     const nextBtn = node.querySelector('.carousel-btn-next');
     const counter = node.querySelector('.carousel-counter');
 
-    sourceBadge.textContent = product.source;
-    categoryBadge.textContent = product.category || product.category_path || 'Sans catégorie';
-    price.textContent = product.price_text || 'Prix non disponible';
-    title.textContent = product.name;
-    identity.textContent = `Goods ID · ${product.goods_id || '—'}`;
-    description.textContent = truncate(product.description || 'Pas de description fournie dans le dataset.', 220);
+    if (sourceBadge) sourceBadge.textContent = product.source;
+    if (categoryBadge) categoryBadge.textContent = product.category || product.category_path || 'Sans catégorie';
+    if (price) price.textContent = product.price_text || 'Prix non disponible';
+    if (title) title.textContent = product.name;
+    if (identity) identity.textContent = `Goods ID · ${product.goods_id || '—'}`;
+    if (description) description.textContent = truncate(product.description || 'Pas de description fournie dans le dataset.', 220);
 
     const images = [product.image, ...(product.imageUrls || [])]
       .filter(Boolean)
       .filter((value, index, array) => array.indexOf(value) === index);
 
-    if (images.length) {
+    if (images.length && img && mediaWrap) {
       let imageIndex = 0;
       const setImage = () => {
         img.src = images[imageIndex];
         img.alt = `${product.name} (${imageIndex + 1}/${images.length})`;
-        counter.textContent = `${imageIndex + 1} / ${images.length}`;
+        if (counter) counter.textContent = `${imageIndex + 1} / ${images.length}`;
       };
 
       setImage();
       img.onerror = () => mediaWrap.classList.add('no-image');
 
-      if (images.length > 1) {
+      if (images.length > 1 && prevBtn && nextBtn && counter) {
         prevBtn.classList.remove('hidden');
         nextBtn.classList.remove('hidden');
         counter.classList.remove('hidden');
@@ -472,7 +526,7 @@ function renderProducts(products) {
           setImage();
         });
       }
-    } else {
+    } else if (mediaWrap) {
       mediaWrap.classList.add('no-image');
     }
 
@@ -485,10 +539,12 @@ function renderProducts(products) {
       product.saved_on_s3 && { label: 'S3', value: 'Oui' },
     ].filter(Boolean);
 
-    highlights.innerHTML = highlightEntries
-      .slice(0, 4)
-      .map((item) => `<span class="highlight-pill"><strong>${escapeHtml(item.label)}</strong> ${escapeHtml(String(item.value))}</span>`)
-      .join('');
+    if (highlights) {
+      highlights.innerHTML = highlightEntries
+        .slice(0, 4)
+        .map((item) => `<span class="highlight-pill"><strong>${escapeHtml(item.label)}</strong> ${escapeHtml(String(item.value))}</span>`)
+        .join('');
+    }
 
     const metaEntries = [
       ['Goods ID', product.goods_id || '—'],
@@ -498,20 +554,28 @@ function renderProducts(products) {
       ['SKU', product.sku || product.id || '—'],
     ];
 
-    meta.innerHTML = metaEntries
-      .filter(([, value]) => value !== '' && value !== null && value !== undefined && value !== '—')
-      .slice(0, 6)
-      .map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd>`)
-      .join('');
+    if (meta) {
+      meta.innerHTML = metaEntries
+        .filter(([, value]) => value !== '' && value !== null && value !== undefined && value !== '—')
+        .slice(0, 6)
+        .map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd>`)
+        .join('');
+    }
 
-    inspectBtn.addEventListener('click', () => openProductModal(product));
+    if (inspectBtn) {
+      inspectBtn.addEventListener('click', () => openProductModal(product));
+    }
 
-    if (product.url) {
-      sourceLink.href = product.url;
-    } else {
-      sourceLink.removeAttribute('href');
-      sourceLink.setAttribute('aria-disabled', 'true');
-      sourceLink.classList.add('disabled');
+    if (sourceLink) {
+      if (product.url) {
+        sourceLink.href = product.url;
+        sourceLink.removeAttribute('aria-disabled');
+        sourceLink.classList.remove('disabled');
+      } else {
+        sourceLink.removeAttribute('href');
+        sourceLink.setAttribute('aria-disabled', 'true');
+        sourceLink.classList.add('disabled');
+      }
     }
 
     fragment.appendChild(node);
