@@ -458,13 +458,59 @@ class Handler(SimpleHTTPRequestHandler):
         load_s3_state()
         return S3_STATE.get('objects', {}).get(normalize_goods_id(dataset_id, product_id))
 
+    def _source_images_for_row(self, row):
+        urls = []
+        for value in [row['image']] + parse_json_list(row['image_urls_json']):
+            if not isinstance(value, str):
+                continue
+            cleaned = value.strip()
+            if not cleaned or not cleaned.lower().startswith(('http://', 'https://')):
+                continue
+            urls.append(cleaned)
+        return list(dict.fromkeys(urls))[:20]
+
+    def _s3_images_for_product(self, s3_object, source_images):
+        if not s3_object:
+            return [], []
+        image_pairs = []
+        raw_pairs = s3_object.get('image_pairs') or []
+        if isinstance(raw_pairs, list):
+            for pair in raw_pairs:
+                if not isinstance(pair, dict):
+                    continue
+                source_url = str(pair.get('source_url') or '').strip()
+                s3_url = str(pair.get('s3_url') or '').strip()
+                if not source_url or not s3_url:
+                    continue
+                image_pairs.append({
+                    'source_url': source_url,
+                    's3_url': s3_url,
+                    'key': pair.get('key'),
+                    'status': pair.get('status'),
+                })
+        if not image_pairs:
+            source_url = str(s3_object.get('source_url') or '').strip()
+            s3_url = str(s3_object.get('s3_url') or '').strip()
+            if source_url and s3_url:
+                image_pairs = [{
+                    'source_url': source_url,
+                    's3_url': s3_url,
+                    'key': s3_object.get('key'),
+                    'status': 'uploaded',
+                }]
+        by_source = {pair['source_url']: pair for pair in image_pairs}
+        ordered_pairs = [by_source[url] for url in source_images if url in by_source]
+        if not ordered_pairs and image_pairs:
+            ordered_pairs = image_pairs
+        s3_urls = [pair['s3_url'] for pair in ordered_pairs if pair.get('s3_url')]
+        return ordered_pairs, s3_urls
+
     def _product_resource(self, row, dataset_row, base_url):
         product_id = str(row['id']).strip()
         goods_id = normalize_goods_id(dataset_row['id'], product_id)
         name = (row['name'] or '').strip() or 'Sans nom'
         description = (row['description'] or '').strip() or 'Imported from scraper feed.'
-        image_urls = [u for u in ([row['image']] + parse_json_list(row['image_urls_json'])) if isinstance(u, str) and u.strip()]
-        image_urls = list(dict.fromkeys(image_urls))
+        image_urls = self._source_images_for_row(row)
         category_name = (row['category'] or '').strip() or None
         category_slug = make_slug(category_name) if category_name else None
         category_url = safe_url(base_url, f'/api/categories/{quote(category_slug)}?dataset={dataset_row["id"]}') if category_slug else None
@@ -475,9 +521,10 @@ class Handler(SimpleHTTPRequestHandler):
                 category_tree.append({'name': top, 'url': category_url})
             category_tree.append({'name': category_name, 'url': category_url})
         s3_object = self._s3_object_for(dataset_row['id'], product_id)
-        s3_url = s3_object.get('s3_url') if s3_object else None
-        images = image_urls[:20]
-        primary_image = s3_url or (images[0] if images else None)
+        image_pairs, s3_image_urls = self._s3_images_for_product(s3_object, image_urls)
+        saved_on_s3 = bool(image_urls) and len(s3_image_urls) == len(image_urls)
+        images = s3_image_urls if saved_on_s3 and s3_image_urls else image_urls
+        primary_image = images[0] if images else None
         return {
             'goods_id': goods_id,
             'goods_sn': product_id,
@@ -499,7 +546,7 @@ class Handler(SimpleHTTPRequestHandler):
             'category_tree': category_tree or None,
             'country_code': 'US',
             'domain': urlparse(row['url']).netloc or None if row['url'] else None,
-            'image_count': len(images),
+            'image_count': len(image_urls),
             'offers': row['price_text'] or None,
             'attributes': [
                 {'name': 'brand', 'value': (row['brand'] or None) if row['brand'] else None},
@@ -536,19 +583,27 @@ class Handler(SimpleHTTPRequestHandler):
             'shipping_type': None,
             'tags': [t for t in [dataset_row['label'], row['source'], category_name, row['brand'], row['color']] if t],
             'model_data': None,
-            'saved_on_s3': bool(s3_url),
-            's3_url': s3_url,
+            'source_image_urls': image_urls,
+            's3_image_urls': s3_image_urls,
+            'image_pairs': image_pairs,
+            'saved_on_s3': saved_on_s3,
+            's3_url': s3_image_urls[0] if s3_image_urls else None,
+            's3_image_count': len(s3_image_urls),
         }
 
     def _legacy_product_payload(self, row, dataset_row, base_url, resource_product=None):
         product = resource_product or self._product_resource(row, dataset_row, base_url)
         legacy = dict(row)
         legacy['sizes'] = parse_json_list(legacy.pop('sizes_json') or '[]')
-        legacy['imageUrls'] = parse_json_list(legacy.pop('image_urls_json') or '[]')
+        legacy['imageUrls'] = product['source_image_urls']
+        legacy['sourceImageUrls'] = product['source_image_urls']
+        legacy['s3ImageUrls'] = product['s3_image_urls']
+        legacy['imagePairs'] = product['image_pairs']
         legacy['image_ok'] = bool(legacy.get('image_ok'))
         legacy['goods_id'] = product['goods_id']
         legacy['saved_on_s3'] = product['saved_on_s3']
         legacy['s3_url'] = product['s3_url']
+        legacy['s3_image_count'] = product['s3_image_count']
         return legacy
 
     def handle_datasets(self, query_string):
@@ -813,18 +868,39 @@ class Handler(SimpleHTTPRequestHandler):
                     candidates.append(cleaned)
             return candidates
 
-        def on_uploaded(row, source_url, key):
+        def on_uploaded(row, item):
             load_s3_state()
             goods_id = normalize_goods_id(dataset_id, row.get('id'))
-            s3_url = f's3://{bucket}/{key}'
+            source_urls = [str(url).strip() for url in (item.get('source_urls') or []) if isinstance(url, str) and str(url).strip()]
+            image_pairs = []
+            for pair in item.get('image_pairs') or []:
+                if not isinstance(pair, dict):
+                    continue
+                source_url = str(pair.get('source_url') or '').strip()
+                s3_url = str(pair.get('s3_url') or '').strip()
+                if not source_url or not s3_url:
+                    continue
+                image_pairs.append({
+                    'source_url': source_url,
+                    's3_url': s3_url,
+                    'key': pair.get('key'),
+                    'status': pair.get('status'),
+                })
             S3_STATE.setdefault('objects', {})[goods_id] = {
                 'dataset_id': dataset_id,
                 'product_id': str(row.get('id')),
                 'goods_id': goods_id,
-                'source_url': source_url,
-                's3_url': s3_url,
+                'source_url': source_urls[0] if source_urls else None,
+                's3_url': image_pairs[0]['s3_url'] if image_pairs else None,
                 'bucket': bucket,
-                'key': key,
+                'key': image_pairs[0].get('key') if image_pairs else None,
+                'source_image_urls': source_urls,
+                's3_image_urls': [pair['s3_url'] for pair in image_pairs],
+                'image_pairs': image_pairs,
+                'source_image_count': len(source_urls),
+                's3_image_count': len(image_pairs),
+                'failed_image_count': int(item.get('image_failed') or 0),
+                'saved_on_s3': bool(item.get('saved_on_s3')),
                 'saved_at': time.time(),
             }
             save_s3_state()

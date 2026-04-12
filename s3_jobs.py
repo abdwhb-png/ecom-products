@@ -166,6 +166,16 @@ class S3JobManager:
             'name': row.get('name') or row.get('title') or '',
             'source_url': None,
             'key': None,
+            'source_urls': [],
+            's3_urls': [],
+            's3_keys': [],
+            'image_pairs': [],
+            'image_total': 0,
+            'image_uploaded': 0,
+            'image_existing': 0,
+            'image_failed': 0,
+            'saved_on_s3': False,
+            'failures': [],
             'status': 'skipped',
             'message': None,
         }
@@ -179,23 +189,37 @@ class S3JobManager:
             candidates = [raw_candidates.strip()]
         else:
             candidates = []
+        candidates = list(dict.fromkeys(candidates))
+        item['source_urls'] = candidates
+        item['image_total'] = len(candidates)
+        if candidates:
+            item['source_url'] = candidates[0]
+            item['key'] = self._build_key(job, row, candidates[0])
         if not candidates:
             item['message'] = 'No source URL available'
             return item
 
         last_error = None
         for source_url in candidates:
-            item['source_url'] = source_url
             key = self._build_key(job, row, source_url)
-            item['key'] = key
+            s3_url = f's3://{job.bucket}/{key}'
             if self._object_exists(s3, job.bucket, key):
-                item['status'] = 'skipped'
-                item['message'] = 'Already exists on S3'
-                return item
+                item['image_existing'] += 1
+                item['s3_urls'].append(s3_url)
+                item['s3_keys'].append(key)
+                item['image_pairs'].append({
+                    'source_url': source_url,
+                    's3_url': s3_url,
+                    'key': key,
+                    'status': 'existing',
+                })
+                continue
             try:
                 content, content_type = self._download(source_url)
                 if not content:
                     raise RuntimeError('Empty content')
+                if content_type and not str(content_type).lower().startswith('image/'):
+                    raise RuntimeError(f'Unexpected content type: {content_type}')
                 s3.put_object(
                     Bucket=job.bucket,
                     Key=key,
@@ -207,18 +231,48 @@ class S3JobManager:
                         'goods_id': str(row.get('goods_id') or row.get('id') or ''),
                     },
                 )
-                if callable(on_uploaded):
-                    on_uploaded(row, source_url, key)
-                item['status'] = 'uploaded'
-                item['message'] = 'Uploaded successfully'
-                return item
+                item['image_uploaded'] += 1
+                item['s3_urls'].append(s3_url)
+                item['s3_keys'].append(key)
+                item['image_pairs'].append({
+                    'source_url': source_url,
+                    's3_url': s3_url,
+                    'key': key,
+                    'status': 'uploaded',
+                })
             except Exception as exc:
                 last_error = exc
-                item['message'] = f'{type(exc).__name__}: {exc}'
-                continue
+                item['image_failed'] += 1
+                item['failures'].append({
+                    'source_url': source_url,
+                    'error': f'{type(exc).__name__}: {exc}',
+                })
 
-        item['status'] = 'failed'
-        item['message'] = f'All candidate URLs failed: {last_error}' if last_error else 'All candidate URLs failed'
+        item['saved_on_s3'] = bool(candidates) and item['image_failed'] == 0 and len(item['s3_urls']) == len(candidates)
+        if item['saved_on_s3']:
+            if item['image_uploaded'] and item['image_existing']:
+                item['status'] = 'uploaded'
+                item['message'] = f"Uploaded {item['image_uploaded']} image(s); {item['image_existing']} already existed on S3"
+            elif item['image_uploaded']:
+                item['status'] = 'uploaded'
+                item['message'] = f"Uploaded {item['image_uploaded']} image(s)"
+            else:
+                item['status'] = 'skipped'
+                item['message'] = 'All product images already exist on S3'
+        else:
+            item['status'] = 'failed'
+            if item['s3_urls']:
+                item['message'] = f"Uploaded {len(item['s3_urls'])}/{len(candidates)} image(s); {item['image_failed']} failed"
+            else:
+                item['message'] = f'All product image uploads failed: {last_error}' if last_error else 'All product image uploads failed'
+
+        if callable(on_uploaded):
+            try:
+                on_uploaded(row, item)
+            except Exception as exc:
+                item['status'] = 'failed'
+                item['saved_on_s3'] = False
+                item['message'] = f'Persistence error: {exc}'
         return item
 
     def _download(self, url: str):
