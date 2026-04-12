@@ -49,6 +49,7 @@ const els = {
   productModalTitle: document.getElementById('productModalTitle'),
   productModalSubtitle: document.getElementById('productModalSubtitle'),
   productModalMeta: document.getElementById('productModalMeta'),
+  productModalSync: document.getElementById('productModalSync'),
   productModalStatus: document.getElementById('productModalStatus'),
   productModalDisplayJson: document.getElementById('productModalDisplayJson'),
   productModalApiJson: document.getElementById('productModalApiJson'),
@@ -315,6 +316,58 @@ function renderPagination(pagination) {
   els.nextPageBtn.disabled = (pagination.page || 1) >= (pagination.totalPages || 1);
 }
 
+function getImageSyncSnapshot(product = {}) {
+  const sourceImages = (product.sourceImageUrls || product.source_image_urls || product.imageUrls || [])
+    .filter(Boolean)
+    .filter((value, index, array) => array.indexOf(value) === index);
+  const s3Images = (product.s3ImageUrls || product.s3_image_urls || [])
+    .filter(Boolean)
+    .filter((value, index, array) => array.indexOf(value) === index);
+  const sourceCount = sourceImages.length;
+  const s3Count = s3Images.length;
+  const fullySynced = sourceCount > 0 && s3Count === sourceCount && Boolean(product.saved_on_s3);
+  const partial = s3Count > 0 && s3Count < sourceCount;
+  const tone = fullySynced ? 'full' : partial ? 'partial' : sourceCount > 0 ? 'source' : 'empty';
+  const label = fullySynced ? 'Fully synced' : partial ? 'Partial sync' : sourceCount > 0 ? 'Source only' : 'No images';
+  const note = fullySynced
+    ? `${s3Count}/${sourceCount} images mirrored to S3`
+    : partial
+      ? `${s3Count}/${sourceCount} images mirrored — resync needed`
+      : sourceCount > 0
+        ? `${sourceCount} source image${sourceCount > 1 ? 's' : ''} waiting for S3`
+        : 'No source image available';
+  return { sourceImages, s3Images, sourceCount, s3Count, fullySynced, partial, tone, label, note };
+}
+
+function renderProductSyncStrip(product = {}) {
+  const sync = getImageSyncSnapshot(product);
+  return `
+    <div class="sync-pill is-${sync.tone}">${escapeHtml(sync.label)}</div>
+    <div class="sync-kpi"><span>Source</span><strong>${sync.sourceCount}</strong></div>
+    <div class="sync-kpi"><span>S3</span><strong>${sync.s3Count}</strong></div>
+  `;
+}
+
+function renderProductModalSync(product = {}) {
+  const sync = getImageSyncSnapshot(product);
+  return `
+    <article class="product-modal-sync-panel is-${sync.tone}">
+      <div class="product-modal-sync-head">
+        <div>
+          <p class="eyebrow">Image sync</p>
+          <strong>${escapeHtml(sync.label)}</strong>
+        </div>
+        <span class="sync-pill is-${sync.tone}">${escapeHtml(sync.fullySynced ? 'ready' : sync.partial ? 'needs sync' : sync.sourceCount ? 'pending' : 'empty')}</span>
+      </div>
+      <div class="product-modal-sync-kpis">
+        <div class="product-modal-meta-card"><span>Images source</span><strong>${sync.sourceCount}</strong></div>
+        <div class="product-modal-meta-card"><span>Images S3</span><strong>${sync.s3Count}</strong></div>
+      </div>
+      <p class="product-modal-sync-note">${escapeHtml(sync.note)}</p>
+    </article>
+  `;
+}
+
 function openProductModalShell() {
   if (!els.productModalBackdrop) return;
   els.productModalBackdrop.classList.remove('hidden');
@@ -339,6 +392,9 @@ function renderProductModalLoading(product) {
     <div class="product-modal-meta-card"><span>Product ID</span><strong>${escapeHtml(product?.id || '—')}</strong></div>
     <div class="product-modal-meta-card"><span>Source</span><strong>${escapeHtml(product?.source || '—')}</strong></div>
   `;
+  if (els.productModalSync) {
+    els.productModalSync.innerHTML = renderProductModalSync(product || {});
+  }
   els.productModalStatus.textContent = 'Chargement à la demande des JSON complets…';
   els.productModalDisplayJson.textContent = 'Chargement…';
   els.productModalApiJson.textContent = 'Chargement…';
@@ -347,6 +403,9 @@ function renderProductModalLoading(product) {
 function renderProductModalError(product, error) {
   els.productModalTitle.textContent = product?.name || 'Produit';
   els.productModalSubtitle.textContent = product?.goods_id || product?.id || 'Erreur';
+  if (els.productModalSync) {
+    els.productModalSync.innerHTML = renderProductModalSync(product || {});
+  }
   els.productModalStatus.textContent = `Erreur: ${error.message}`;
   els.productModalDisplayJson.textContent = 'Impossible de charger la version dashboard.';
   els.productModalApiJson.textContent = 'Impossible de charger la version API.';
@@ -356,10 +415,12 @@ function renderProductModal(detail, fallbackProduct = {}) {
   const display = detail?.display || {};
   const apiProduct = detail?.api || detail?.data || {};
   const dataset = detail?.dataset || {};
+  const summaryProduct = { ...fallbackProduct, ...display, ...apiProduct };
   const name = display?.name || apiProduct?.name || fallbackProduct?.name || 'Produit';
   const goodsId = display?.goods_id || apiProduct?.goods_id || fallbackProduct?.goods_id || '—';
   const productId = display?.id || apiProduct?.goods_sn || fallbackProduct?.id || '—';
   const sourceUrl = display?.url || apiProduct?.product_url || fallbackProduct?.url || '—';
+  const sync = getImageSyncSnapshot(summaryProduct);
 
   els.productModalTitle.textContent = name;
   els.productModalSubtitle.textContent = `${goodsId} · ${dataset?.label || fallbackProduct?.source || 'Catalogue local'}`;
@@ -369,7 +430,10 @@ function renderProductModal(detail, fallbackProduct = {}) {
     <div class="product-modal-meta-card"><span>Product ID</span><strong>${escapeHtml(productId)}</strong></div>
     <div class="product-modal-meta-card"><span>URL source</span><strong>${escapeHtml(sourceUrl)}</strong></div>
   `;
-  els.productModalStatus.textContent = 'Chargé à la demande — la grille reste légère, le détail n’est fetch que pour ce modal.';
+  if (els.productModalSync) {
+    els.productModalSync.innerHTML = renderProductModalSync(summaryProduct);
+  }
+  els.productModalStatus.textContent = `Chargé à la demande — ${sync.note}. La grille reste légère, le détail n’est fetch que pour ce modal.`;
   els.productModalDisplayJson.textContent = JSON.stringify(display, null, 2);
   els.productModalApiJson.textContent = JSON.stringify(apiProduct, null, 2);
 }
@@ -413,6 +477,7 @@ function ensureProductCardControls(node) {
   const title = node.querySelector('.product-title');
   const description = node.querySelector('.product-description');
   let identity = node.querySelector('.product-identity');
+  let syncStrip = node.querySelector('.product-sync-strip');
   let actions = node.querySelector('.product-actions');
   let inspectBtn = node.querySelector('.product-inspect-btn');
   let sourceLink = node.querySelector('.product-source-link');
@@ -421,6 +486,16 @@ function ensureProductCardControls(node) {
     identity = document.createElement('p');
     identity.className = 'product-identity';
     description.parentNode.insertBefore(identity, description);
+  }
+
+  if (!syncStrip && body) {
+    syncStrip = document.createElement('div');
+    syncStrip.className = 'product-sync-strip';
+    if (description && description.parentNode) {
+      description.parentNode.insertBefore(syncStrip, body.querySelector('.product-meta'));
+    } else {
+      body.appendChild(syncStrip);
+    }
   }
 
   if (!actions && body) {
@@ -457,7 +532,7 @@ function ensureProductCardControls(node) {
     }
   }
 
-  return { card, title, identity, description, inspectBtn, sourceLink };
+  return { card, title, identity, description, syncStrip, inspectBtn, sourceLink };
 }
 
 function renderProducts(products) {
@@ -483,6 +558,7 @@ function renderProducts(products) {
     const title = controls.title;
     const identity = controls.identity;
     const description = controls.description;
+    const syncStrip = controls.syncStrip;
     const highlights = node.querySelector('.product-highlights');
     const meta = node.querySelector('.product-meta');
     const inspectBtn = controls.inspectBtn;
@@ -530,13 +606,18 @@ function renderProducts(products) {
       mediaWrap.classList.add('no-image');
     }
 
+    const syncSnapshot = getImageSyncSnapshot(product);
+    if (syncStrip) {
+      syncStrip.innerHTML = renderProductSyncStrip(product);
+    }
+
     const highlightEntries = [
       product.brand && { label: 'Brand', value: product.brand },
       product.color && { label: 'Couleur', value: product.color },
       (product.rating !== undefined && product.rating !== null && product.rating !== '') && { label: 'Note', value: product.rating },
       Number(product.reviews_count) > 0 && { label: 'Avis', value: product.reviews_count },
-      images.length > 0 && { label: 'Images', value: images.length },
-      product.saved_on_s3 && { label: 'S3', value: 'Oui' },
+      syncSnapshot.sourceCount > 0 && { label: 'Source', value: syncSnapshot.sourceCount },
+      syncSnapshot.s3Count > 0 && { label: 'S3', value: syncSnapshot.s3Count },
     ].filter(Boolean);
 
     if (highlights) {
@@ -550,7 +631,7 @@ function renderProducts(products) {
       ['Goods ID', product.goods_id || '—'],
       ['Tailles', (product.sizes || []).join(', ') || product.size_text || '—'],
       ['Source', product.source || '—'],
-      ['S3', product.saved_on_s3 ? 'Oui' : 'Non'],
+      ['Sync', syncSnapshot.label],
       ['SKU', product.sku || product.id || '—'],
     ];
 
