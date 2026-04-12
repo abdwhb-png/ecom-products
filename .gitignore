@@ -30,4 +30,5 @@ fast-fashion-dashboard/downloads/
 
 # Local runtime helpers/state
 s3_state.json
+s3_jobs_state.json
 .tmp-run-s3*.sh
