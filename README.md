@@ -90,6 +90,13 @@ Authorization: Bearer change-me-to-a-long-random-secret
 The dashboard stores the token in browser localStorage after you enter it once, so the UI can keep calling the protected API.
 If `FAST_FASHION_API_TOKEN` is empty, the API stays open for local/dev usage.
 
+Important access behavior:
+
+- `/` (the HTML dashboard) is public unless you separately protect it at the reverse proxy level
+- `/api/*` requires `Authorization: Bearer <token>` when `FAST_FASHION_API_TOKEN` is set
+- `/healthz` is intentionally public so Dokploy / reverse proxies can health-check the service without the API token
+- on the first protected dashboard load, the browser asks for the token and then reuses it from localStorage
+
 ## API
 
 ### `GET /api/openapi.json`
@@ -167,11 +174,19 @@ Recommended Dokploy settings:
 - **Mode:** Docker Compose
 - **Compose file:** `dokploy.compose.yml`
 - **Domain target port:** `8765`
-- **Environment variables:** inject the same values as `.env`, especially `FAST_FASHION_API_TOKEN`
+- **Health check:** `/healthz`
+- **Environment variables:** set them in Dokploy itself; `dokploy.compose.yml` is wired to read injected Dokploy env vars directly, so a committed `.env` file is not required on the server
+- **Minimum required env:** `FAST_FASHION_API_TOKEN`
 - **Persistence:** `../files/fast-fashion-dashboard/runtime` and `../files/fast-fashion-dashboard/data`
 
 The container bootstraps the SQLite catalog automatically on first start if `/app/runtime/catalog.db` does not exist yet.
 Datasets are therefore not baked into the image itself; on first deploy the container downloads/rebuilds the retained datasets and creates the SQLite catalog in the persistent runtime volume. On later redeploys, the existing catalog is reused.
+
+Access notes for first deploy:
+
+- the first boot can take longer because the catalog is built/downloaded before the service becomes healthy
+- do not expect `/api/*` to work without the Bearer token when protection is enabled
+- if you want the HTML dashboard itself to be private, protect the domain at Dokploy / Traefik / upstream proxy level too
 
 ## Deployment notes
 
@@ -184,3 +199,4 @@ Recommended for prod:
 - keep the app behind HTTPS so the Bearer token is encrypted in transit
 - use `/healthz` as the deployment health check
 - keep `.env` out of git and inject secrets through your deploy platform when possible
+- remember that the API token protects the API, not the dashboard HTML itself

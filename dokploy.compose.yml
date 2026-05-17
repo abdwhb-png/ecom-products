@@ -3,12 +3,24 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    env_file:
-      - .env
     environment:
-      FAST_FASHION_HOST: 0.0.0.0
-      FAST_FASHION_PORT: 8765
-      FAST_FASHION_DB_PATH: /app/runtime/catalog.db
+      FAST_FASHION_HOST: ${FAST_FASHION_HOST:-0.0.0.0}
+      FAST_FASHION_PORT: ${FAST_FASHION_PORT:-8765}
+      FAST_FASHION_DB_PATH: ${FAST_FASHION_DB_PATH:-/app/runtime/catalog.db}
+      FAST_FASHION_API_TOKEN: ${FAST_FASHION_API_TOKEN}
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGINGFACE_HUB_TOKEN: ${HUGGINGFACE_HUB_TOKEN:-}
+      KAGGLE_USERNAME: ${KAGGLE_USERNAME:-}
+      KAGGLE_KEY: ${KAGGLE_KEY:-}
+      FAST_FASHION_S3_PASSWORD: ${FAST_FASHION_S3_PASSWORD:-}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_PREFIX: ${S3_PREFIX:-}
+      AWS_REGION: ${AWS_REGION:-}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
     expose:
       - "8765"
     healthcheck:

@@ -178,6 +178,7 @@
           <span class="pill ok">Read-only API</span>
           <span class="pill blue">External clients friendly</span>
           <span class="pill">OpenAPI 3.1</span>
+          <span class="pill">Health endpoint: /healthz</span>
         </div>
         <h1>Fast Fashion Dashboard API</h1>
         <p>
@@ -195,6 +196,7 @@
           <ul>
             <li>Réponses JSON avec erreurs structurées.</li>
             <li>Authentification Bearer supportée via l’en-tête <code class="inline">Authorization</code>.</li>
+            <li><code class="inline">/healthz</code> reste public pour les health checks de déploiement.</li>
             <li>CORS activé pour les consommateurs externes.</li>
             <li><code class="inline">goods_id</code> stable et unique par dataset.</li>
             <li>Monnaie sérialisée en chaînes à 2 décimales.</li>
@@ -207,6 +209,7 @@
           <h2>Base URLs</h2>
           <table class="table">
             <tr><th>OpenAPI</th><td><code class="inline">/api/openapi.json</code></td></tr>
+            <tr><th>Health</th><td><code class="inline">/healthz</code></td></tr>
             <tr><th>Catégories</th><td><code class="inline">/api/categories</code></td></tr>
             <tr><th>Produit</th><td><code class="inline">/api/products/{goods_id}</code></td></tr>
             <tr><th>Auth</th><td><code class="inline">Authorization: Bearer &lt;token&gt;</code></td></tr>
@@ -222,6 +225,20 @@
         </div>
 
         <div style="margin-top: 14px;" class="grid">
+          <article class="card" style="background: var(--panel-2);">
+            <div class="endpoint"><span class="method get">GET</span><span class="path">/healthz</span></div>
+            <p class="muted small">Endpoint de santé public pour Dokploy, reverse proxies et checks de disponibilité. Il ne demande pas de token Bearer.</p>
+            <pre>{
+  "data": {
+    "ok": true,
+    "db_path": "/app/runtime/catalog.db",
+    "db_exists": true,
+    "has_datasets_table": true,
+    "datasets_count": 2
+  }
+}</pre>
+          </article>
+
           <article class="card" style="background: var(--panel-2);">
             <div class="endpoint"><span class="method get">GET</span><span class="path">/api/categories</span></div>
             <p class="muted small">Liste les catégories dans un format stable.</p>
@@ -312,6 +329,8 @@
             <li>Les données imbriquées restent des objets/arrays réels.</li>
             <li>Les schémas sont stables et lisibles par des services externes.</li>
             <li>Le dashboard peut continuer à consommer le format legacy si nécessaire.</li>
+            <li>Quand <code class="inline">FAST_FASHION_API_TOKEN</code> est défini, tous les endpoints <code class="inline">/api/*</code> exigent le header Bearer.</li>
+            <li>Le HTML du dashboard et <code class="inline">/healthz</code> ne sont pas protégés par ce token API.</li>
           </ul>
           <p class="muted small">Tu peux aussi lire la spec brute via <code class="inline">/api/openapi.json</code>.</p>
         </section>
