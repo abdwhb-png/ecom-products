@@ -103,6 +103,16 @@
         </div>
       </nav>
 
+      <section id="authGate" class="auth-gate hidden">
+        <h2>API protégée</h2>
+        <p>Entre le token d’autorisation pour accéder au dashboard et à l’API.</p>
+        <div class="auth-row">
+          <input id="apiTokenInput" type="password" placeholder="Token Bearer" autocomplete="off" />
+          <button id="unlockApiBtn" class="primary-btn" type="button">Déverrouiller</button>
+        </div>
+        <p id="apiAuthHint" class="muted small"></p>
+      </section>
+
       <section id="statusBanner" class="status-banner info">Chargement du dashboard…</section>
 
       <section id="summaryBar" class="summary-bar"></section>

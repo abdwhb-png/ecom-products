@@ -1,3 +1,5 @@
+const API_TOKEN_STORAGE_KEY = 'fast-fashion-api-token';
+
 const els = {
   authGate: document.getElementById('authGate'),
   authStateLabel: document.getElementById('authStateLabel'),
@@ -32,6 +34,7 @@ const els = {
 };
 
 const state = {
+  apiToken: '',
   datasets: [],
   s3Jobs: [],
   unlocked: false,
@@ -76,6 +79,7 @@ function formatDuration(startedAt, endedAt) {
 
 async function init() {
   bindEvents();
+  hydrateApiToken();
   await loadDatasets();
   await hydrateAuthState();
   await refreshS3Jobs();
@@ -116,6 +120,18 @@ function bindEvents() {
   });
 }
 
+function hydrateApiToken() {
+  state.apiToken = (window.localStorage.getItem(API_TOKEN_STORAGE_KEY) || '').trim();
+}
+
+function getApiHeaders(extraHeaders = {}) {
+  const headers = { ...extraHeaders };
+  if (state.apiToken) {
+    headers.Authorization = `Bearer ${state.apiToken}`;
+  }
+  return headers;
+}
+
 function openModalShell() {
   els.jobModalBackdrop.classList.remove('hidden');
   els.jobModalBackdrop.classList.add('is-open');
@@ -132,7 +148,7 @@ function closeJobModal() {
 }
 
 async function hydrateAuthState() {
-  const response = await fetch('/api/s3/auth-check', { credentials: 'include' });
+  const response = await fetch('/api/s3/auth-check', { credentials: 'include', headers: getApiHeaders() });
   const payload = await response.json().catch(() => ({}));
   if (payload?.data?.authenticated) {
     state.unlocked = true;
@@ -146,12 +162,17 @@ async function hydrateAuthState() {
 async function unlockPage() {
   const password = els.passwordInput.value.trim();
   const response = await fetch('/api/s3/auth', {
+    headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     method: 'POST',
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ password }),
   });
   const payload = await response.json().catch(() => ({}));
+  if (response.status === 401 && payload?.error?.code === 'unauthorized' && !password) {
+    els.authStateLabel.textContent = 'API verrouillée';
+    els.authHint.textContent = 'Le token API Bearer est requis avant le mot de passe S3.';
+    return;
+  }
   if (!response.ok) {
     els.authStateLabel.textContent = 'Verrouillé';
     els.authHint.textContent = payload?.error?.message || 'Mot de passe invalide';
@@ -166,7 +187,10 @@ async function unlockPage() {
 }
 
 async function loadDatasets() {
-  const response = await fetch('/api/datasets');
+  const response = await fetch('/api/datasets', { headers: getApiHeaders() });
+  if (!response.ok) {
+    throw new Error(response.status === 401 ? 'Token API requis ou invalide' : 'Impossible de charger les datasets');
+  }
   const payload = await response.json();
   state.datasets = (payload.datasets || []).filter((dataset) => ['shein', 'asos'].includes(dataset.id));
   const options = state.datasets.map((dataset) => `<option value="${dataset.id}">${escapeHtml(dataset.label)}</option>`).join('');
@@ -175,7 +199,7 @@ async function loadDatasets() {
 }
 
 async function refreshS3Jobs() {
-  const response = await fetch('/api/s3/jobs', { credentials: 'include' });
+  const response = await fetch('/api/s3/jobs', { credentials: 'include', headers: getApiHeaders() });
   if (!response.ok) {
     if (response.status === 401) {
       state.unlocked = false;
@@ -258,7 +282,7 @@ async function openJobDetails(jobId, page = 1, options = {}) {
   state.detailPage = page;
   openModalShell();
   if (!options.quiet) renderJobDetailsLoading(jobId, page);
-  const response = await fetch(`/api/s3/jobs/${encodeURIComponent(jobId)}?page=${page}&page_size=${state.detailPageSize}`, { credentials: 'include' });
+  const response = await fetch(`/api/s3/jobs/${encodeURIComponent(jobId)}?page=${page}&page_size=${state.detailPageSize}`, { credentials: 'include', headers: getApiHeaders() });
   if (!response.ok) return;
   const payload = await response.json();
   state.selectedJobDetail = payload.data;
@@ -503,7 +527,7 @@ async function startS3Job() {
   const response = await fetch('/api/s3/jobs', {
     method: 'POST',
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body),
   });
   if (!response.ok) throw new Error(`Impossible de lancer le job S3 (${response.status})`);
@@ -513,7 +537,7 @@ async function startS3Job() {
 async function stopActiveS3Job() {
   const active = state.s3Jobs.find((job) => ['running', 'queued', 'cancel_requested'].includes(job.status));
   if (!active) return;
-  await fetch(`/api/s3/jobs/${encodeURIComponent(active.job_id)}/cancel`, { method: 'POST', credentials: 'include' });
+  await fetch(`/api/s3/jobs/${encodeURIComponent(active.job_id)}/cancel`, { method: 'POST', credentials: 'include', headers: getApiHeaders() });
   await refreshS3Jobs();
 }
 

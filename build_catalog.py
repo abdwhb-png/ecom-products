@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 import csv
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -14,7 +15,7 @@ from dataset_service import DatasetDownloadService, load_dotenv
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / 'data'
 DOWNLOADS_DIR = DATA_DIR / 'downloads'
-DB_PATH = ROOT / 'catalog.db'
+DB_PATH = Path(os.getenv('FAST_FASHION_DB_PATH', str(ROOT / 'catalog.db')))
 
 SHEIN_SAMPLE_URL = 'https://raw.githubusercontent.com/luminati-io/Shein-dataset-samples/main/shein-products.csv'
 ASOS_HF_REPO = 'UniqueData/asos-e-commerce-dataset'

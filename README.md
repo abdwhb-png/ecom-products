@@ -73,6 +73,23 @@ If your environment does not expose a user bus, you can still run the wrapper di
 ./scripts/run-dev-server.sh
 ```
 
+## API protection
+
+In production, protect every `/api/*` route with a Bearer token:
+
+```bash
+FAST_FASHION_API_TOKEN="change-me-to-a-long-random-secret" python3 server.py
+```
+
+Then every API request must include:
+
+```http
+Authorization: Bearer change-me-to-a-long-random-secret
+```
+
+The dashboard stores the token in browser localStorage after you enter it once, so the UI can keep calling the protected API.
+If `FAST_FASHION_API_TOKEN` is empty, the API stays open for local/dev usage.
+
 ## API
 
 ### `GET /api/openapi.json`
@@ -123,7 +140,47 @@ Query params:
 - `source_url` is preferred for categories
 - `category_url` is preferred for products
 
+## Docker Compose / Dokploy
+
+Local compose for validation:
+
+```bash
+docker compose up --build -d
+```
+
+Then test the dedicated health endpoint and the protected API:
+
+```bash
+curl http://127.0.0.1:8765/healthz
+curl -H "Authorization: Bearer $FAST_FASHION_API_TOKEN" http://127.0.0.1:8765/api/datasets
+```
+
+Stop it when done:
+
+```bash
+docker compose down
+```
+
+For Dokploy, use `dokploy.compose.yml`.
+Recommended Dokploy settings:
+
+- **Mode:** Docker Compose
+- **Compose file:** `dokploy.compose.yml`
+- **Domain target port:** `8765`
+- **Environment variables:** inject the same values as `.env`, especially `FAST_FASHION_API_TOKEN`
+- **Persistence:** `../files/fast-fashion-dashboard/runtime` and `../files/fast-fashion-dashboard/data`
+
+The container bootstraps the SQLite catalog automatically on first start if `/app/runtime/catalog.db` does not exist yet.
+Datasets are therefore not baked into the image itself; on first deploy the container downloads/rebuilds the retained datasets and creates the SQLite catalog in the persistent runtime volume. On later redeploys, the existing catalog is reused.
+
 ## Deployment notes
 
 For deployment, do not commit local datasets, secrets, or generated SQLite files unless you intentionally want them in the repo.
 You can rebuild the SQLite catalog during deploy or replace the current ingestion pipeline with your own API/database layer later.
+
+Recommended for prod:
+
+- set `FAST_FASHION_API_TOKEN` to a long random secret
+- keep the app behind HTTPS so the Bearer token is encrypted in transit
+- use `/healthz` as the deployment health check
+- keep `.env` out of git and inject secrets through your deploy platform when possible

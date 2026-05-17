@@ -1,0 +1,28 @@
+services:
+  fast-fashion-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fast-fashion-dashboard
+    env_file:
+      - .env
+    environment:
+      FAST_FASHION_HOST: 0.0.0.0
+      FAST_FASHION_PORT: 8765
+      FAST_FASHION_DB_PATH: /app/runtime/catalog.db
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - fast-fashion-runtime:/app/runtime
+      - fast-fashion-data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8765/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    restart: unless-stopped
+
+volumes:
+  fast-fashion-runtime:
+  fast-fashion-data:

@@ -18,10 +18,11 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
+from dataset_service import load_dotenv
 from s3_jobs import S3JobManager
 
 ROOT = Path(__file__).resolve().parent
-DB_PATH = ROOT / 'catalog.db'
+DB_PATH = Path(os.getenv('FAST_FASHION_DB_PATH', str(ROOT / 'catalog.db')))
 DOCS_PATH = ROOT / 'docs.html'
 S3_PAGE_PATH = ROOT / 's3.html'
 S3_STATE_PATH = ROOT / 's3_state.json'
@@ -31,6 +32,8 @@ MAX_PAGE_SIZE = 200
 S3_JOB_MANAGER = S3JobManager()
 S3_STATE: dict = {'config': {}, 'objects': {}}
 S3_STATE_MTIME = 0.0
+
+load_dotenv()
 
 ALLOWED_SORTS = {
     'relevance': 'COALESCE(s.ok, 0) DESC, p.image_count DESC, p.id ASC',
@@ -50,6 +53,7 @@ CORS_HEADERS = {
     'Referrer-Policy': 'no-referrer',
     'X-Frame-Options': 'DENY',
 }
+API_BEARER_TOKEN = os.getenv('FAST_FASHION_API_TOKEN', '').strip()
 S3_PASSWORD = os.getenv('FAST_FASHION_S3_PASSWORD', '').strip()
 S3_AUTH_TOKENS: dict[str, float] = {}
 S3_AUTH_TTL_SECONDS = 60 * 60
@@ -79,11 +83,23 @@ OPENAPI_SPEC = {
     'openapi': '3.1.0',
     'info': {
         'title': 'Fast Fashion Dashboard API',
-        'version': '1.0.1',
+        'version': '1.0.2',
         'description': 'Read-only API for categories/products plus background S3 jobs.',
     },
     'servers': [{'url': '/'}],
+    'components': {
+        'securitySchemes': {
+            'bearerAuth': {
+                'type': 'http',
+                'scheme': 'bearer',
+                'bearerFormat': 'API token',
+                'description': 'Send the deployment token in the Authorization header: Bearer <token>.',
+            }
+        }
+    },
+    'security': [{'bearerAuth': []}],
     'paths': {
+        '/healthz': {'get': {'summary': 'Deployment health endpoint'}},
         '/api/openapi.json': {'get': {'summary': 'OpenAPI document'}},
         '/api/categories': {'get': {'summary': 'List categories'}},
         '/api/categories/{slug}': {'get': {'summary': 'Get category'}},
@@ -150,13 +166,43 @@ def db_connect():
     return conn
 
 
-def json_response(handler, payload, status=HTTPStatus.OK):
+def health_status():
+    status = {
+        'ok': False,
+        'db_path': str(DB_PATH),
+        'db_exists': DB_PATH.exists(),
+        'datasets_count': 0,
+    }
+    if not status['db_exists']:
+        return status
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            row = conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='datasets'").fetchone()
+            has_datasets_table = bool(row and row[0])
+            status['has_datasets_table'] = has_datasets_table
+            if not has_datasets_table:
+                return status
+            count_row = conn.execute('SELECT COUNT(*) FROM datasets').fetchone()
+            status['datasets_count'] = int(count_row[0] or 0) if count_row else 0
+            status['ok'] = status['datasets_count'] > 0
+            return status
+        finally:
+            conn.close()
+    except Exception as exc:
+        status['error'] = str(exc)
+        return status
+
+
+def json_response(handler, payload, status=HTTPStatus.OK, extra_headers=None):
     body = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
     handler.send_response(status)
     handler.send_header('Content-Type', 'application/json; charset=utf-8')
     handler.send_header('Content-Length', str(len(body)))
     handler.send_header('Cache-Control', 'no-store')
     for key, value in CORS_HEADERS.items():
+        handler.send_header(key, value)
+    for key, value in (extra_headers or {}).items():
         handler.send_header(key, value)
     handler.end_headers()
     handler.wfile.write(body)
@@ -173,8 +219,8 @@ def html_response(handler, content: bytes, status=HTTPStatus.OK):
     handler.wfile.write(content)
 
 
-def error_response(handler, message, status=HTTPStatus.BAD_REQUEST, code='bad_request'):
-    json_response(handler, {'error': {'code': code, 'message': message}}, status=status)
+def error_response(handler, message, status=HTTPStatus.BAD_REQUEST, code='bad_request', extra_headers=None):
+    json_response(handler, {'error': {'code': code, 'message': message}}, status=status, extra_headers=extra_headers)
 
 
 def hash_password(password: str) -> str:
@@ -211,6 +257,38 @@ def auth_required(handler) -> bool:
     if token_is_valid(token):
         return True
     return False
+
+
+def get_bearer_token(handler) -> str:
+    header = (handler.headers.get('Authorization', '') or '').strip()
+    if not header:
+        return ''
+    scheme, _, token = header.partition(' ')
+    if scheme.lower() != 'bearer':
+        return ''
+    return token.strip()
+
+
+def api_token_is_valid(handler) -> bool:
+    if not API_BEARER_TOKEN:
+        return True
+    token = get_bearer_token(handler)
+    if not token:
+        return False
+    return hmac.compare_digest(token, API_BEARER_TOKEN)
+
+
+def api_unauthorized_response(handler):
+    return error_response(
+        handler,
+        'Authorization token required',
+        HTTPStatus.UNAUTHORIZED,
+        code='unauthorized',
+        extra_headers={
+            'WWW-Authenticate': 'Bearer realm="fast-fashion-dashboard"',
+            'X-Fast-Fashion-Auth-Required': 'true',
+        },
+    )
 
 
 def parse_positive_int(value, default, minimum=1, maximum=None):
@@ -344,6 +422,11 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         try:
+            if parsed.path == '/healthz':
+                status = health_status()
+                return json_response(self, {'data': status}, status=HTTPStatus.OK if status.get('ok') else HTTPStatus.SERVICE_UNAVAILABLE)
+            if parsed.path.startswith('/api/') and not api_token_is_valid(self):
+                return api_unauthorized_response(self)
             if parsed.path == '/docs':
                 content = DOCS_PATH.read_bytes()
                 return html_response(self, content)
@@ -395,6 +478,8 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         try:
+            if parsed.path.startswith('/api/') and not api_token_is_valid(self):
+                return api_unauthorized_response(self)
             if parsed.path == '/api/s3/jobs':
                 return self.handle_s3_jobs_create()
             if parsed.path == '/api/s3/auth':

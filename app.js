@@ -1,6 +1,9 @@
 const query = new URLSearchParams(window.location.search);
+const API_TOKEN_STORAGE_KEY = 'fast-fashion-api-token';
 
 const state = {
+  apiToken: '',
+  apiUnlocked: false,
   datasets: [],
   currentDataset: query.get('dataset') || 'shein',
   search: (query.get('search') || '').trim().toLowerCase(),
@@ -53,16 +56,31 @@ const els = {
   productModalStatus: document.getElementById('productModalStatus'),
   productModalDisplayJson: document.getElementById('productModalDisplayJson'),
   productModalApiJson: document.getElementById('productModalApiJson'),
+  authGate: document.getElementById('authGate'),
+  apiTokenInput: document.getElementById('apiTokenInput'),
+  unlockApiBtn: document.getElementById('unlockApiBtn'),
+  apiAuthHint: document.getElementById('apiAuthHint'),
 };
 
 async function init() {
   bindEvents();
+  hydrateApiToken();
   syncControlsFromState();
   await loadDatasets();
   await refreshUI();
 }
 
 function bindEvents() {
+  els.unlockApiBtn?.addEventListener('click', async () => {
+    await unlockApi();
+  });
+  els.apiTokenInput?.addEventListener('keydown', async (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      await unlockApi();
+    }
+  });
+
   els.datasetSelect.addEventListener('change', async (event) => {
     state.currentDataset = event.target.value;
     state.category = '';
@@ -168,11 +186,62 @@ function bindEvents() {
   });
 }
 
+function hydrateApiToken() {
+  const stored = window.localStorage.getItem(API_TOKEN_STORAGE_KEY) || '';
+  state.apiToken = stored.trim();
+  if (els.apiTokenInput) {
+    els.apiTokenInput.value = state.apiToken;
+  }
+}
+
+function getApiHeaders(extraHeaders = {}) {
+  const headers = { ...extraHeaders };
+  if (state.apiToken) {
+    headers.Authorization = `Bearer ${state.apiToken}`;
+  }
+  return headers;
+}
+
+function setApiLocked(message = 'Token requis pour accéder à l’API.') {
+  state.apiUnlocked = false;
+  els.authGate?.classList.remove('hidden');
+  if (els.apiAuthHint) {
+    els.apiAuthHint.textContent = message;
+  }
+}
+
+function setApiUnlocked(message = '') {
+  state.apiUnlocked = true;
+  els.authGate?.classList.add('hidden');
+  if (els.apiAuthHint) {
+    els.apiAuthHint.textContent = message;
+  }
+}
+
+async function unlockApi() {
+  const candidate = (els.apiTokenInput?.value || '').trim();
+  state.apiToken = candidate;
+  if (candidate) {
+    window.localStorage.setItem(API_TOKEN_STORAGE_KEY, candidate);
+  } else {
+    window.localStorage.removeItem(API_TOKEN_STORAGE_KEY);
+  }
+  await loadDatasets();
+  await refreshUI({
+    title: 'Vérification du token…',
+    text: 'On teste l’accès à l’API protégée.',
+  });
+}
+
 async function loadDatasets() {
   updateStatus('Chargement des datasets…', 'info');
   els.datasetLoader.classList.remove('hidden');
   try {
-    const response = await fetch('/api/datasets');
+    const response = await fetch('/api/datasets', { headers: getApiHeaders() });
+    if (response.status === 401) {
+      setApiLocked('Token invalide ou manquant.');
+      throw new Error('Autorisation requise');
+    }
     if (!response.ok) throw new Error(`Impossible de charger les datasets (${response.status})`);
     const payload = await response.json();
     state.datasets = (payload.datasets || []).filter((dataset) => ['shein', 'asos'].includes(dataset.id));
@@ -180,6 +249,7 @@ async function loadDatasets() {
       state.currentDataset = state.datasets[0].id;
     }
     hydrateDatasetSelect();
+    setApiUnlocked(state.apiToken ? 'Token valide.' : '');
   } finally {
     els.datasetLoader.classList.add('hidden');
   }
@@ -232,7 +302,11 @@ async function fetchProducts() {
     pageSize: String(state.pageSize),
   });
 
-  const response = await fetch(`/api/products?${params.toString()}`);
+  const response = await fetch(`/api/products?${params.toString()}`, { headers: getApiHeaders() });
+  if (response.status === 401) {
+    setApiLocked('Token invalide ou manquant.');
+    throw new Error('Autorisation requise');
+  }
   if (!response.ok) throw new Error(`Impossible de charger les produits (${response.status})`);
   const payload = await response.json();
   state.page = payload.pagination?.page || 1;
@@ -446,7 +520,11 @@ async function fetchProductDetail(product) {
   if (state.productDetailCache[cacheKey]) {
     return { cacheKey, payload: state.productDetailCache[cacheKey] };
   }
-  const response = await fetch(`/api/products/${encodeURIComponent(productId)}?dataset=${encodeURIComponent(datasetId)}`);
+  const response = await fetch(`/api/products/${encodeURIComponent(productId)}?dataset=${encodeURIComponent(datasetId)}`, { headers: getApiHeaders() });
+  if (response.status === 401) {
+    setApiLocked('Token invalide ou manquant.');
+    throw new Error('Autorisation requise');
+  }
   if (!response.ok) throw new Error(`Impossible de charger le détail produit (${response.status})`);
   const payload = await response.json();
   state.productDetailCache[cacheKey] = payload;

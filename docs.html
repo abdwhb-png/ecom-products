@@ -194,6 +194,7 @@
           </div>
           <ul>
             <li>Réponses JSON avec erreurs structurées.</li>
+            <li>Authentification Bearer supportée via l’en-tête <code class="inline">Authorization</code>.</li>
             <li>CORS activé pour les consommateurs externes.</li>
             <li><code class="inline">goods_id</code> stable et unique par dataset.</li>
             <li>Monnaie sérialisée en chaînes à 2 décimales.</li>
@@ -208,7 +209,8 @@
             <tr><th>OpenAPI</th><td><code class="inline">/api/openapi.json</code></td></tr>
             <tr><th>Catégories</th><td><code class="inline">/api/categories</code></td></tr>
             <tr><th>Produit</th><td><code class="inline">/api/products/{goods_id}</code></td></tr>
-            <tr><th>Version</th><td><code class="inline">1.0.0</code></td></tr>
+            <tr><th>Auth</th><td><code class="inline">Authorization: Bearer &lt;token&gt;</code></td></tr>
+            <tr><th>Version</th><td><code class="inline">1.0.2</code></td></tr>
           </table>
         </section>
       </div>
