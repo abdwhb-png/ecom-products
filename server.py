@@ -83,10 +83,18 @@ OPENAPI_SPEC = {
     'openapi': '3.1.0',
     'info': {
         'title': 'Fast Fashion Dashboard API',
-        'version': '1.0.3',
+        'version': '1.1.0',
         'description': 'Read-only API for categories/products plus background S3 jobs.',
     },
     'servers': [{'url': '/'}],
+    'tags': [
+        {'name': 'health', 'description': 'Public deployment and readiness endpoints.'},
+        {'name': 'meta', 'description': 'Public API description endpoints.'},
+        {'name': 'datasets', 'description': 'Dataset metadata endpoints.'},
+        {'name': 'categories', 'description': 'Category listing and detail endpoints.'},
+        {'name': 'products', 'description': 'Product listing and detail endpoints.'},
+        {'name': 's3', 'description': 'Protected S3 sync and background job endpoints.'},
+    ],
     'components': {
         'securitySchemes': {
             'bearerAuth': {
@@ -95,87 +103,852 @@ OPENAPI_SPEC = {
                 'bearerFormat': 'API token',
                 'description': 'Send the deployment token in the Authorization header: Bearer <token>.',
             }
-        }
+        },
+        'parameters': {
+            'dataset': {
+                'name': 'dataset',
+                'in': 'query',
+                'description': 'Dataset identifier.',
+                'schema': {'type': 'string', 'enum': ['shein', 'asos'], 'default': 'shein'},
+            },
+            'page': {
+                'name': 'page',
+                'in': 'query',
+                'description': '1-based page number.',
+                'schema': {'type': 'integer', 'minimum': 1, 'default': 1},
+            },
+            'pageSize': {
+                'name': 'pageSize',
+                'in': 'query',
+                'description': 'Page size.',
+                'schema': {'type': 'integer', 'minimum': 1, 'maximum': 200},
+            },
+            'categorySlug': {
+                'name': 'slug',
+                'in': 'path',
+                'required': True,
+                'description': 'Stable slug of the category.',
+                'schema': {'type': 'string'},
+            },
+            'goodsId': {
+                'name': 'goods_id',
+                'in': 'path',
+                'required': True,
+                'description': 'Stable goods id, optionally prefixed with the dataset (example: shein:123).',
+                'schema': {'type': 'string'},
+            },
+            'jobId': {
+                'name': 'job_id',
+                'in': 'path',
+                'required': True,
+                'description': 'Background S3 job identifier.',
+                'schema': {'type': 'string'},
+            },
+            'search': {
+                'name': 'search',
+                'in': 'query',
+                'description': 'Full-text search term applied to the indexed catalog text.',
+                'schema': {'type': 'string'},
+            },
+            'categoryFilter': {
+                'name': 'category',
+                'in': 'query',
+                'description': 'Category name or fragment used to filter products.',
+                'schema': {'type': 'string'},
+            },
+            'sort': {
+                'name': 'sort',
+                'in': 'query',
+                'description': 'Sort mode.',
+                'schema': {
+                    'type': 'string',
+                    'enum': ['relevance', 'price-asc', 'price-desc', 'rating-desc', 'reviews-desc', 'name-asc'],
+                    'default': 'relevance',
+                },
+            },
+            'imagesOnly': {
+                'name': 'imagesOnly',
+                'in': 'query',
+                'description': 'When true, returns only products that have at least one source image.',
+                'schema': {'type': 'boolean', 'default': False},
+            },
+            'format': {
+                'name': 'format',
+                'in': 'query',
+                'description': 'Response shape. legacy matches the dashboard payload, resource exposes the stable resource schema.',
+                'schema': {'type': 'string', 'enum': ['legacy', 'resource'], 'default': 'legacy'},
+            },
+            'page_size_jobs': {
+                'name': 'page_size',
+                'in': 'query',
+                'description': 'Number of S3 job items returned per page.',
+                'schema': {'type': 'integer', 'minimum': 1, 'maximum': 50, 'default': 12},
+            },
+        },
+        'schemas': {
+            'OpenApiDocument': {'type': 'object', 'additionalProperties': True},
+            'ErrorObject': {
+                'type': 'object',
+                'required': ['code', 'message'],
+                'properties': {
+                    'code': {'type': 'string'},
+                    'message': {'type': 'string'},
+                },
+            },
+            'ErrorResponse': {
+                'type': 'object',
+                'required': ['error'],
+                'properties': {
+                    'error': {'$ref': '#/components/schemas/ErrorObject'},
+                },
+            },
+            'HealthStatus': {
+                'type': 'object',
+                'required': ['ok', 'db_path', 'db_exists', 'datasets_count'],
+                'properties': {
+                    'ok': {'type': 'boolean'},
+                    'db_path': {'type': 'string'},
+                    'db_exists': {'type': 'boolean'},
+                    'has_datasets_table': {'type': 'boolean'},
+                    'datasets_count': {'type': 'integer'},
+                    'error': {'type': 'string'},
+                },
+            },
+            'HealthResponse': {
+                'type': 'object',
+                'required': ['data'],
+                'properties': {
+                    'data': {'$ref': '#/components/schemas/HealthStatus'},
+                },
+            },
+            'DatasetMeta': {
+                'type': 'object',
+                'required': ['id', 'label', 'source', 'total_count', 'with_images_count', 'with_reviews_count', 'local_path', 'provider'],
+                'properties': {
+                    'id': {'type': 'string', 'enum': ['shein', 'asos']},
+                    'label': {'type': 'string'},
+                    'source': {'type': 'string'},
+                    'total_count': {'type': 'integer'},
+                    'with_images_count': {'type': 'integer'},
+                    'with_reviews_count': {'type': 'integer'},
+                    'local_path': {'type': 'string'},
+                    'provider': {'type': 'string'},
+                },
+            },
+            'DatasetsResponse': {
+                'type': 'object',
+                'required': ['datasets'],
+                'properties': {
+                    'datasets': {
+                        'type': 'array',
+                        'items': {'$ref': '#/components/schemas/DatasetMeta'},
+                    },
+                },
+            },
+            'Pagination': {
+                'type': 'object',
+                'required': ['page', 'pageSize', 'total', 'totalPages', 'from', 'to'],
+                'properties': {
+                    'page': {'type': 'integer'},
+                    'pageSize': {'type': 'integer'},
+                    'total': {'type': 'integer'},
+                    'totalPages': {'type': 'integer'},
+                    'from': {'type': 'integer'},
+                    'to': {'type': 'integer'},
+                },
+            },
+            'CategoryResource': {
+                'type': 'object',
+                'required': ['name', 'slug', 'top_category_name', 'source_url', 'image_url'],
+                'properties': {
+                    'name': {'type': 'string'},
+                    'slug': {'type': 'string'},
+                    'top_category_name': {'type': ['string', 'null']},
+                    'source_url': {'type': ['string', 'null']},
+                    'image_url': {'type': ['string', 'null']},
+                    'count': {'type': 'integer'},
+                },
+            },
+            'CategoriesListResponse': {
+                'type': 'object',
+                'required': ['dataset', 'data', 'pagination'],
+                'properties': {
+                    'dataset': {'$ref': '#/components/schemas/DatasetMeta'},
+                    'data': {
+                        'type': 'array',
+                        'items': {'$ref': '#/components/schemas/CategoryResource'},
+                    },
+                    'pagination': {'$ref': '#/components/schemas/Pagination'},
+                },
+            },
+            'CategoryDetailResponse': {
+                'type': 'object',
+                'required': ['dataset', 'data'],
+                'properties': {
+                    'dataset': {'$ref': '#/components/schemas/DatasetMeta'},
+                    'data': {'$ref': '#/components/schemas/CategoryResource'},
+                },
+            },
+            'Attribute': {
+                'type': 'object',
+                'required': ['name', 'value'],
+                'properties': {
+                    'name': {'type': 'string'},
+                    'value': {'type': ['string', 'number', 'boolean', 'null']},
+                },
+            },
+            'CategoryTreeItem': {
+                'type': 'object',
+                'required': ['name', 'url'],
+                'properties': {
+                    'name': {'type': 'string'},
+                    'url': {'type': ['string', 'null']},
+                },
+            },
+            'CategoryDetails': {
+                'type': 'object',
+                'properties': {
+                    'category_id': {'type': ['string', 'null']},
+                    'goods_id': {'type': 'string'},
+                    'level': {'type': ['integer', 'null']},
+                    'name': {'type': ['string', 'null']},
+                    'url': {'type': ['string', 'null']},
+                },
+            },
+            'StoreDetails': {
+                'type': 'object',
+                'properties': {
+                    'code': {'type': ['string', 'null']},
+                    'followers': {'type': ['integer', 'null']},
+                    'items': {'type': ['integer', 'null']},
+                    'name': {'type': ['string', 'null']},
+                },
+            },
+            'ImagePair': {
+                'type': 'object',
+                'properties': {
+                    'source_url': {'type': 'string'},
+                    's3_url': {'type': 'string'},
+                    'key': {'type': ['string', 'null']},
+                    'status': {'type': ['string', 'null']},
+                },
+            },
+            'ProductResource': {
+                'type': 'object',
+                'required': ['goods_id', 'goods_sn', 'spu', 'name', 'description', 'retail_price', 'sale_price', 'currency', 'images', 'attributes', 'store_name', 'rating', 'reviews_count', 'saved_on_s3', 's3_image_count'],
+                'properties': {
+                    'goods_id': {'type': 'string'},
+                    'goods_sn': {'type': 'string'},
+                    'spu': {'type': 'string'},
+                    'category_id': {'type': ['string', 'null']},
+                    'name': {'type': 'string'},
+                    'brand': {'type': ['string', 'null']},
+                    'color': {'type': ['string', 'null']},
+                    'size': {'type': ['string', 'null']},
+                    'description': {'type': 'string'},
+                    'retail_price': {'type': 'string'},
+                    'sale_price': {'type': 'string'},
+                    'currency': {'type': 'string'},
+                    'in_stock': {'type': 'boolean'},
+                    'stock_quantity': {'type': 'integer'},
+                    'images': {'type': 'array', 'items': {'type': 'string'}},
+                    'category_url': {'type': ['string', 'null']},
+                    'product_url': {'type': ['string', 'null']},
+                    'category_tree': {
+                        'oneOf': [
+                            {'type': 'null'},
+                            {'type': 'array', 'items': {'$ref': '#/components/schemas/CategoryTreeItem'}},
+                        ]
+                    },
+                    'country_code': {'type': ['string', 'null']},
+                    'domain': {'type': ['string', 'null']},
+                    'image_count': {'type': 'integer'},
+                    'offers': {'type': ['string', 'null']},
+                    'attributes': {'type': 'array', 'items': {'$ref': '#/components/schemas/Attribute'}},
+                    'root_category': {'type': ['string', 'null']},
+                    'related_products': {'type': ['array', 'null']},
+                    'top_reviews': {'type': ['array', 'null']},
+                    'store_name': {'type': ['string', 'null']},
+                    'rating': {'type': 'string'},
+                    'reviews_count': {'type': 'integer'},
+                    'is_free_shipping': {'type': 'boolean'},
+                    'available_sizes': {
+                        'oneOf': [
+                            {'type': 'null'},
+                            {'type': 'array', 'items': {'type': 'string'}},
+                        ]
+                    },
+                    'category_details': {'$ref': '#/components/schemas/CategoryDetails'},
+                    'discount_price': {'type': 'string'},
+                    'discount_price_usd': {'type': 'string'},
+                    'colors': {
+                        'oneOf': [
+                            {'type': 'null'},
+                            {'type': 'array', 'items': {'type': ['string', 'null']}},
+                        ]
+                    },
+                    'store_details': {'$ref': '#/components/schemas/StoreDetails'},
+                    'shipping_details': {'type': ['object', 'null'], 'additionalProperties': True},
+                    'shipping_type': {'type': ['string', 'null']},
+                    'tags': {'type': 'array', 'items': {'type': 'string'}},
+                    'model_data': {'type': ['object', 'null'], 'additionalProperties': True},
+                    'source_image_urls': {'type': 'array', 'items': {'type': 'string'}},
+                    's3_image_urls': {'type': 'array', 'items': {'type': 'string'}},
+                    'image_pairs': {'type': 'array', 'items': {'$ref': '#/components/schemas/ImagePair'}},
+                    'saved_on_s3': {'type': 'boolean'},
+                    's3_url': {'type': ['string', 'null']},
+                    's3_image_count': {'type': 'integer'},
+                },
+            },
+            'LegacyProduct': {
+                'type': 'object',
+                'description': 'Dashboard-oriented legacy payload. Shape can include the original imported row plus derived display fields.',
+                'properties': {
+                    'goods_id': {'type': 'string'},
+                    'saved_on_s3': {'type': 'boolean'},
+                    's3_url': {'type': ['string', 'null']},
+                    's3_image_count': {'type': 'integer'},
+                    'sourceImageUrls': {'type': 'array', 'items': {'type': 'string'}},
+                    's3ImageUrls': {'type': 'array', 'items': {'type': 'string'}},
+                    'imagePairs': {'type': 'array', 'items': {'$ref': '#/components/schemas/ImagePair'}},
+                },
+                'additionalProperties': True,
+            },
+            'ProductsLegacyResponse': {
+                'type': 'object',
+                'required': ['dataset', 'products', 'pagination', 'categories'],
+                'properties': {
+                    'dataset': {'$ref': '#/components/schemas/DatasetMeta'},
+                    'products': {'type': 'array', 'items': {'$ref': '#/components/schemas/LegacyProduct'}},
+                    'pagination': {'$ref': '#/components/schemas/Pagination'},
+                    'categories': {
+                        'type': 'array',
+                        'items': {
+                            'type': 'object',
+                            'required': ['name', 'count'],
+                            'properties': {
+                                'name': {'type': 'string'},
+                                'count': {'type': 'integer'},
+                            },
+                        },
+                    },
+                },
+            },
+            'ProductsResourceResponse': {
+                'type': 'object',
+                'required': ['dataset', 'data', 'pagination', 'categories'],
+                'properties': {
+                    'dataset': {'$ref': '#/components/schemas/DatasetMeta'},
+                    'data': {'type': 'array', 'items': {'$ref': '#/components/schemas/ProductResource'}},
+                    'pagination': {'$ref': '#/components/schemas/Pagination'},
+                    'categories': {'type': 'array', 'items': {'$ref': '#/components/schemas/CategoryResource'}},
+                },
+            },
+            'ProductDetailResponse': {
+                'type': 'object',
+                'required': ['dataset', 'display', 'api', 'data'],
+                'properties': {
+                    'dataset': {'$ref': '#/components/schemas/DatasetMeta'},
+                    'display': {'$ref': '#/components/schemas/LegacyProduct'},
+                    'api': {'$ref': '#/components/schemas/ProductResource'},
+                    'data': {'$ref': '#/components/schemas/ProductResource'},
+                },
+            },
+            'S3Config': {
+                'type': 'object',
+                'properties': {
+                    'region_name': {'type': ['string', 'null']},
+                    'bucket': {'type': ['string', 'null']},
+                    'prefix': {'type': ['string', 'null']},
+                    'endpoint_url': {'type': ['string', 'null']},
+                },
+            },
+            'S3ConfigResponse': {
+                'type': 'object',
+                'required': ['data'],
+                'properties': {
+                    'data': {'$ref': '#/components/schemas/S3Config'},
+                },
+            },
+            'S3JobItem': {
+                'type': 'object',
+                'additionalProperties': True,
+                'properties': {
+                    'status': {'type': ['string', 'null']},
+                    'message': {'type': ['string', 'null']},
+                    'goods_id': {'type': ['string', 'null']},
+                    'product_id': {'type': ['string', 'null']},
+                    'source_url': {'type': ['string', 'null']},
+                    's3_url': {'type': ['string', 'null']},
+                },
+            },
+            'S3JobState': {
+                'type': 'object',
+                'additionalProperties': True,
+                'properties': {
+                    'job_id': {'type': 'string'},
+                    'dataset_id': {'type': 'string'},
+                    'source': {'type': 'string'},
+                    'limit': {'type': 'integer'},
+                    'status': {'type': 'string'},
+                    'processed': {'type': 'integer'},
+                    'uploaded': {'type': 'integer'},
+                    'skipped': {'type': 'integer'},
+                    'failed': {'type': 'integer'},
+                    'total': {'type': 'integer'},
+                    'started_at': {'type': ['number', 'null']},
+                    'ended_at': {'type': ['number', 'null']},
+                    'error': {'type': ['string', 'null']},
+                    'cancel_requested': {'type': 'boolean'},
+                    'bucket': {'type': ['string', 'null']},
+                    'prefix': {'type': ['string', 'null']},
+                    'concurrency': {'type': 'integer'},
+                    'source_filter': {'type': ['string', 'null']},
+                    'last_message': {'type': ['string', 'null']},
+                    'items': {'type': ['array', 'null'], 'items': {'$ref': '#/components/schemas/S3JobItem'}},
+                },
+            },
+            'S3JobsListResponse': {
+                'type': 'object',
+                'required': ['data', 'config'],
+                'properties': {
+                    'data': {'type': 'array', 'items': {'$ref': '#/components/schemas/S3JobState'}},
+                    'config': {'$ref': '#/components/schemas/S3Config'},
+                },
+            },
+            'S3JobDetailPayload': {
+                'type': 'object',
+                'required': ['job', 'items', 'page', 'page_size', 'total_items', 'total_pages'],
+                'properties': {
+                    'job': {'$ref': '#/components/schemas/S3JobState'},
+                    'items': {'type': 'array', 'items': {'$ref': '#/components/schemas/S3JobItem'}},
+                    'page': {'type': 'integer'},
+                    'page_size': {'type': 'integer'},
+                    'total_items': {'type': 'integer'},
+                    'total_pages': {'type': 'integer'},
+                },
+            },
+            'S3JobDetailResponse': {
+                'type': 'object',
+                'required': ['data'],
+                'properties': {
+                    'data': {'$ref': '#/components/schemas/S3JobDetailPayload'},
+                },
+            },
+            'S3AuthStatusResponse': {
+                'type': 'object',
+                'required': ['data'],
+                'properties': {
+                    'data': {
+                        'type': 'object',
+                        'required': ['authenticated'],
+                        'properties': {
+                            'authenticated': {'type': 'boolean'},
+                            'expires_in_seconds': {'type': 'integer'},
+                        },
+                    },
+                },
+            },
+            'S3AuthRequest': {
+                'type': 'object',
+                'properties': {
+                    'password': {'type': 'string'},
+                },
+            },
+            'S3JobCreateRequest': {
+                'type': 'object',
+                'properties': {
+                    'dataset_id': {'type': 'string', 'enum': ['shein', 'asos'], 'default': 'shein'},
+                    'source': {'type': 'string', 'default': 'products'},
+                    'limit': {'type': 'integer', 'minimum': 1, 'default': 100},
+                    'concurrency': {'type': 'integer', 'minimum': 1, 'maximum': 24, 'default': 4},
+                    'bucket': {'type': 'string'},
+                    'prefix': {'type': 'string'},
+                    'region_name': {'type': 'string'},
+                    'endpoint_url': {'type': 'string'},
+                    'source_filter': {'type': 'string'},
+                },
+            },
+            'S3JobAcceptedResponse': {
+                'type': 'object',
+                'required': ['data', 'future'],
+                'properties': {
+                    'data': {'$ref': '#/components/schemas/S3JobState'},
+                    'future': {'type': 'boolean'},
+                },
+            },
+        },
+        'responses': {
+            'Unauthorized': {
+                'description': 'Missing or invalid bearer token.',
+                'content': {
+                    'application/json': {
+                        'schema': {'$ref': '#/components/schemas/ErrorResponse'},
+                    }
+                },
+            },
+            'NotFound': {
+                'description': 'Requested resource was not found.',
+                'content': {
+                    'application/json': {
+                        'schema': {'$ref': '#/components/schemas/ErrorResponse'},
+                    }
+                },
+            },
+            'BadRequest': {
+                'description': 'Request validation failed.',
+                'content': {
+                    'application/json': {
+                        'schema': {'$ref': '#/components/schemas/ErrorResponse'},
+                    }
+                },
+            },
+            'InternalError': {
+                'description': 'Internal server error.',
+                'content': {
+                    'application/json': {
+                        'schema': {'$ref': '#/components/schemas/ErrorResponse'},
+                    }
+                },
+            },
+        },
     },
     'paths': {
         '/healthz': {
             'get': {
+                'tags': ['health'],
+                'operationId': 'getHealthz',
                 'summary': 'Deployment health endpoint',
                 'description': 'Public readiness endpoint for Dokploy and reverse-proxy health checks.',
                 'responses': {
-                    '200': {'description': 'Service is ready'},
-                    '503': {'description': 'Service is not ready yet'},
+                    '200': {
+                        'description': 'Service is ready.',
+                        'content': {'application/json': {'schema': {'$ref': '#/components/schemas/HealthResponse'}}},
+                    },
+                    '503': {
+                        'description': 'Service is not ready yet.',
+                        'content': {'application/json': {'schema': {'$ref': '#/components/schemas/HealthResponse'}}},
+                    },
                 },
             }
         },
         '/openapi.json': {
             'get': {
+                'tags': ['meta'],
+                'operationId': 'getOpenApiDocument',
                 'summary': 'OpenAPI document',
                 'description': 'Public OpenAPI document for client integration and tooling.',
-                'responses': {'200': {'description': 'OpenAPI document'}},
+                'responses': {
+                    '200': {
+                        'description': 'OpenAPI document.',
+                        'content': {'application/json': {'schema': {'$ref': '#/components/schemas/OpenApiDocument'}}},
+                    }
+                },
             }
         },
         '/api/openapi.json': {
             'get': {
+                'tags': ['meta'],
+                'operationId': 'getOpenApiDocumentAlias',
                 'summary': 'OpenAPI document alias',
                 'description': 'Backward-compatible alias of /openapi.json.',
-                'responses': {'200': {'description': 'OpenAPI document'}},
+                'responses': {
+                    '200': {
+                        'description': 'OpenAPI document.',
+                        'content': {'application/json': {'schema': {'$ref': '#/components/schemas/OpenApiDocument'}}},
+                    }
+                },
+            }
+        },
+        '/api/datasets': {
+            'get': {
+                'tags': ['datasets'],
+                'operationId': 'listDatasets',
+                'summary': 'List datasets',
+                'description': 'Returns metadata for all retained datasets, or a single dataset when the dataset query parameter is provided.',
+                'security': [{'bearerAuth': []}],
+                'parameters': [
+                    {
+                        'name': 'dataset',
+                        'in': 'query',
+                        'description': 'Optional dataset filter.',
+                        'schema': {'type': 'string', 'enum': ['shein', 'asos']},
+                    }
+                ],
+                'responses': {
+                    '200': {
+                        'description': 'Dataset metadata list.',
+                        'content': {'application/json': {'schema': {'$ref': '#/components/schemas/DatasetsResponse'}}},
+                    },
+                    '401': {'$ref': '#/components/responses/Unauthorized'},
+                    '500': {'$ref': '#/components/responses/InternalError'},
+                },
             }
         },
         '/api/categories': {
             'get': {
+                'tags': ['categories'],
+                'operationId': 'listCategories',
                 'summary': 'List categories',
+                'description': 'Returns stable category resources for a dataset.',
                 'security': [{'bearerAuth': []}],
+                'parameters': [
+                    {'$ref': '#/components/parameters/dataset'},
+                    {'$ref': '#/components/parameters/page'},
+                    {'$ref': '#/components/parameters/pageSize'},
+                ],
+                'responses': {
+                    '200': {
+                        'description': 'Category list.',
+                        'content': {'application/json': {'schema': {'$ref': '#/components/schemas/CategoriesListResponse'}}},
+                    },
+                    '400': {'$ref': '#/components/responses/BadRequest'},
+                    '401': {'$ref': '#/components/responses/Unauthorized'},
+                    '500': {'$ref': '#/components/responses/InternalError'},
+                },
             }
         },
         '/api/categories/{slug}': {
             'get': {
+                'tags': ['categories'],
+                'operationId': 'getCategory',
                 'summary': 'Get category',
+                'description': 'Returns a single category resource by slug.',
                 'security': [{'bearerAuth': []}],
+                'parameters': [
+                    {'$ref': '#/components/parameters/categorySlug'},
+                    {'$ref': '#/components/parameters/dataset'},
+                ],
+                'responses': {
+                    '200': {
+                        'description': 'Category detail.',
+                        'content': {'application/json': {'schema': {'$ref': '#/components/schemas/CategoryDetailResponse'}}},
+                    },
+                    '400': {'$ref': '#/components/responses/BadRequest'},
+                    '401': {'$ref': '#/components/responses/Unauthorized'},
+                    '404': {'$ref': '#/components/responses/NotFound'},
+                    '500': {'$ref': '#/components/responses/InternalError'},
+                },
             }
         },
         '/api/products': {
             'get': {
+                'tags': ['products'],
+                'operationId': 'listProducts',
                 'summary': 'List products',
+                'description': 'Returns either the legacy dashboard payload or the stable resource payload, depending on the format query parameter.',
                 'security': [{'bearerAuth': []}],
+                'parameters': [
+                    {'$ref': '#/components/parameters/dataset'},
+                    {'$ref': '#/components/parameters/search'},
+                    {'$ref': '#/components/parameters/categoryFilter'},
+                    {'$ref': '#/components/parameters/sort'},
+                    {'$ref': '#/components/parameters/imagesOnly'},
+                    {'$ref': '#/components/parameters/page'},
+                    {'$ref': '#/components/parameters/pageSize'},
+                    {'$ref': '#/components/parameters/format'},
+                ],
+                'responses': {
+                    '200': {
+                        'description': 'Product list.',
+                        'content': {
+                            'application/json': {
+                                'schema': {
+                                    'oneOf': [
+                                        {'$ref': '#/components/schemas/ProductsLegacyResponse'},
+                                        {'$ref': '#/components/schemas/ProductsResourceResponse'},
+                                    ]
+                                }
+                            }
+                        },
+                    },
+                    '400': {'$ref': '#/components/responses/BadRequest'},
+                    '401': {'$ref': '#/components/responses/Unauthorized'},
+                    '500': {'$ref': '#/components/responses/InternalError'},
+                },
             }
         },
         '/api/products/{goods_id}': {
             'get': {
+                'tags': ['products'],
+                'operationId': 'getProduct',
                 'summary': 'Get product',
+                'description': 'Returns a single product in both the legacy dashboard display shape and the stable resource shape.',
                 'security': [{'bearerAuth': []}],
+                'parameters': [
+                    {'$ref': '#/components/parameters/goodsId'},
+                    {'$ref': '#/components/parameters/dataset'},
+                ],
+                'responses': {
+                    '200': {
+                        'description': 'Product detail.',
+                        'content': {'application/json': {'schema': {'$ref': '#/components/schemas/ProductDetailResponse'}}},
+                    },
+                    '400': {'$ref': '#/components/responses/BadRequest'},
+                    '401': {'$ref': '#/components/responses/Unauthorized'},
+                    '404': {'$ref': '#/components/responses/NotFound'},
+                    '500': {'$ref': '#/components/responses/InternalError'},
+                },
             }
         },
-        '/api/s3/jobs': {
+        '/api/s3/auth-check': {
             'get': {
-                'summary': 'List jobs',
+                'tags': ['s3'],
+                'operationId': 'getS3AuthCheck',
+                'summary': 'Check S3 auth session',
+                'description': 'Returns whether the current browser session already holds a valid S3 auth cookie.',
                 'security': [{'bearerAuth': []}],
-            },
-            'post': {
-                'summary': 'Create job',
-                'security': [{'bearerAuth': []}],
+                'responses': {
+                    '200': {
+                        'description': 'S3 auth status.',
+                        'content': {'application/json': {'schema': {'$ref': '#/components/schemas/S3AuthStatusResponse'}}},
+                    },
+                    '401': {'$ref': '#/components/responses/Unauthorized'},
+                },
             }
         },
-        '/api/s3/jobs/{job_id}': {
-            'get': {
-                'summary': 'Get job detail',
-                'security': [{'bearerAuth': []}],
-            }
-        },
-        '/api/s3/jobs/{job_id}/cancel': {
+        '/api/s3/auth': {
             'post': {
-                'summary': 'Cancel job',
+                'tags': ['s3'],
+                'operationId': 'postS3Auth',
+                'summary': 'Authenticate S3 control session',
+                'description': 'Validates the S3 password and returns an HttpOnly cookie used by the S3 control page.',
                 'security': [{'bearerAuth': []}],
+                'requestBody': {
+                    'required': False,
+                    'content': {
+                        'application/json': {
+                            'schema': {'$ref': '#/components/schemas/S3AuthRequest'},
+                        }
+                    },
+                },
+                'responses': {
+                    '200': {
+                        'description': 'Authenticated.',
+                        'content': {'application/json': {'schema': {'$ref': '#/components/schemas/S3AuthStatusResponse'}}},
+                    },
+                    '401': {'$ref': '#/components/responses/Unauthorized'},
+                },
             }
         },
         '/api/s3/config': {
             'get': {
+                'tags': ['s3'],
+                'operationId': 'getS3Config',
                 'summary': 'Get S3 config',
+                'description': 'Returns the non-secret S3 configuration visible to the UI.',
                 'security': [{'bearerAuth': []}],
+                'responses': {
+                    '200': {
+                        'description': 'S3 config.',
+                        'content': {'application/json': {'schema': {'$ref': '#/components/schemas/S3ConfigResponse'}}},
+                    },
+                    '401': {'$ref': '#/components/responses/Unauthorized'},
+                },
             },
             'post': {
+                'tags': ['s3'],
+                'operationId': 'updateS3Config',
                 'summary': 'Update S3 config',
+                'description': 'Updates the non-secret S3 configuration persisted on disk.',
                 'security': [{'bearerAuth': []}],
+                'requestBody': {
+                    'required': True,
+                    'content': {
+                        'application/json': {
+                            'schema': {'$ref': '#/components/schemas/S3Config'},
+                        }
+                    },
+                },
+                'responses': {
+                    '200': {
+                        'description': 'Updated S3 config.',
+                        'content': {'application/json': {'schema': {'$ref': '#/components/schemas/S3ConfigResponse'}}},
+                    },
+                    '400': {'$ref': '#/components/responses/BadRequest'},
+                    '401': {'$ref': '#/components/responses/Unauthorized'},
+                },
+            },
+        },
+        '/api/s3/jobs': {
+            'get': {
+                'tags': ['s3'],
+                'operationId': 'listS3Jobs',
+                'summary': 'List jobs',
+                'description': 'Returns S3 job history plus the effective non-secret config.',
+                'security': [{'bearerAuth': []}],
+                'responses': {
+                    '200': {
+                        'description': 'S3 jobs list.',
+                        'content': {'application/json': {'schema': {'$ref': '#/components/schemas/S3JobsListResponse'}}},
+                    },
+                    '401': {'$ref': '#/components/responses/Unauthorized'},
+                },
+            },
+            'post': {
+                'tags': ['s3'],
+                'operationId': 'createS3Job',
+                'summary': 'Create job',
+                'description': 'Starts a new S3 background sync job for a dataset.',
+                'security': [{'bearerAuth': []}],
+                'requestBody': {
+                    'required': True,
+                    'content': {
+                        'application/json': {
+                            'schema': {'$ref': '#/components/schemas/S3JobCreateRequest'},
+                        }
+                    },
+                },
+                'responses': {
+                    '202': {
+                        'description': 'Job created.',
+                        'content': {'application/json': {'schema': {'$ref': '#/components/schemas/S3JobAcceptedResponse'}}},
+                    },
+                    '400': {'$ref': '#/components/responses/BadRequest'},
+                    '401': {'$ref': '#/components/responses/Unauthorized'},
+                },
+            },
+        },
+        '/api/s3/jobs/{job_id}': {
+            'get': {
+                'tags': ['s3'],
+                'operationId': 'getS3Job',
+                'summary': 'Get job detail',
+                'description': 'Returns one job plus a paginated slice of its item history.',
+                'security': [{'bearerAuth': []}],
+                'parameters': [
+                    {'$ref': '#/components/parameters/jobId'},
+                    {'$ref': '#/components/parameters/page'},
+                    {'$ref': '#/components/parameters/page_size_jobs'},
+                ],
+                'responses': {
+                    '200': {
+                        'description': 'S3 job detail.',
+                        'content': {'application/json': {'schema': {'$ref': '#/components/schemas/S3JobDetailResponse'}}},
+                    },
+                    '401': {'$ref': '#/components/responses/Unauthorized'},
+                    '404': {'$ref': '#/components/responses/NotFound'},
+                },
+            }
+        },
+        '/api/s3/jobs/{job_id}/cancel': {
+            'post': {
+                'tags': ['s3'],
+                'operationId': 'cancelS3Job',
+                'summary': 'Cancel job',
+                'description': 'Requests cancellation of an active S3 background job.',
+                'security': [{'bearerAuth': []}],
+                'parameters': [
+                    {'$ref': '#/components/parameters/jobId'},
+                ],
+                'responses': {
+                    '202': {
+                        'description': 'Cancellation accepted.',
+                        'content': {'application/json': {'schema': {'type': 'object', 'properties': {'data': {'$ref': '#/components/schemas/S3JobState'}}}}},
+                    },
+                    '401': {'$ref': '#/components/responses/Unauthorized'},
+                    '404': {'$ref': '#/components/responses/NotFound'},
+                },
             }
         },
     },
