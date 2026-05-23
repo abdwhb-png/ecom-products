@@ -1593,7 +1593,19 @@ S3_JOB_MANAGER = S3JobManager(load_jobs_fn=_load_s3_jobs_from_db, save_jobs_fn=_
 
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
+        self._sent_cache_control = False
         super().__init__(*args, directory=str(ROOT), **kwargs)
+
+    def send_header(self, keyword, value):
+        if str(keyword).lower() == 'cache-control':
+            self._sent_cache_control = True
+        return super().send_header(keyword, value)
+
+    def end_headers(self):
+        if not self._sent_cache_control:
+            super().send_header('Cache-Control', 'no-store')
+        self._sent_cache_control = False
+        super().end_headers()
 
     def do_OPTIONS(self):
         self.send_response(HTTPStatus.NO_CONTENT)
