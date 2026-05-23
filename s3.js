@@ -582,6 +582,12 @@ async function cancelSelectedJob() {
 async function stopActiveS3Job() {
   const activeJobs = state.s3Jobs.filter((job) => ['running', 'queued', 'cancel_requested'].includes(job.status));
   if (!activeJobs.length || state.isCancellingJobs) return;
+  const confirmed = window.confirm(
+    activeJobs.length > 1
+      ? `Annuler ${activeJobs.length} jobs actifs ? Cette action va demander l’arrêt de tous les jobs en cours ou en attente.`
+      : 'Annuler le job actif ?'
+  );
+  if (!confirmed) return;
   state.isCancellingJobs = true;
   syncCancelButtons();
   try {
