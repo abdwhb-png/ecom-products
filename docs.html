@@ -31,7 +31,7 @@
         line-height: 1.6;
       }
       .wrap {
-        max-width: 1180px;
+        max-width: 1240px;
         margin: 0 auto;
         padding: 32px 20px 80px;
       }
@@ -50,7 +50,7 @@
       .hero p {
         margin: 0;
         color: var(--muted);
-        max-width: 900px;
+        max-width: 980px;
       }
       .pill-row {
         display: flex;
@@ -77,7 +77,6 @@
         margin-top: 18px;
       }
       .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .card {
         background: var(--panel);
         border: 1px solid var(--line);
@@ -138,6 +137,7 @@
         font-size: 0.82rem;
       }
       .get { background: rgba(52, 211, 153, 0.18); color: #bbf7d0; }
+      .post { background: rgba(56, 189, 248, 0.18); color: #bae6fd; }
       .path { color: #dbeafe; font-size: 1rem; }
       .small { font-size: 0.92rem; }
       a { color: #93c5fd; }
@@ -160,13 +160,30 @@
         border: 1px solid rgba(251, 191, 36, 0.18);
         font-size: 0.8rem;
       }
-      .two-col {
+      .subgrid {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 16px;
       }
+      .param-list,
+      .response-list {
+        display: grid;
+        gap: 10px;
+        margin-top: 14px;
+      }
+      .param-item,
+      .response-item {
+        padding: 12px 14px;
+        border-radius: 14px;
+        background: rgba(15, 23, 42, 0.72);
+        border: 1px solid rgba(148, 163, 184, 0.14);
+      }
+      .param-item strong,
+      .response-item strong {
+        display: block;
+        margin-bottom: 4px;
+      }
       @media (max-width: 900px) {
-        .grid.two, .grid.three, .two-col { grid-template-columns: 1fr; }
+        .grid.two { grid-template-columns: 1fr; }
         .wrap { padding: 18px 14px 60px; }
       }
     </style>
@@ -178,56 +195,57 @@
           <span class="pill ok">Read-only API</span>
           <span class="pill blue">External clients friendly</span>
           <span class="pill">OpenAPI 3.1</span>
+          <span class="pill">Public spec: /openapi.json</span>
           <span class="pill">Health endpoint: /healthz</span>
         </div>
         <h1>Fast Fashion Dashboard API</h1>
         <p>
-          Cette API expose uniquement les ressources utiles au projet : <strong>catégories</strong> et <strong>produits</strong>.
-          Le format par défaut reste compatible avec le dashboard, et un format ressource stable est disponible pour les services externes.
+          Cette documentation reflète désormais une spec OpenAPI plus riche : schémas, paramètres, réponses, sécurité Bearer par endpoint protégé,
+          et endpoints publics séparés pour <strong>/openapi.json</strong> et <strong>/healthz</strong>.
         </p>
       </section>
 
       <div class="grid two">
         <section class="card">
           <div class="section-title">
-            <h2>Points clés</h2>
-            <span class="badge">Stable</span>
+            <h2>Accès & sécurité</h2>
+            <span class="badge">Important</span>
           </div>
           <ul>
-            <li>Réponses JSON avec erreurs structurées.</li>
-            <li>Authentification Bearer supportée via l’en-tête <code class="inline">Authorization</code>.</li>
-            <li><code class="inline">/healthz</code> reste public pour les health checks de déploiement.</li>
-            <li>CORS activé pour les consommateurs externes.</li>
-            <li><code class="inline">goods_id</code> stable et unique par dataset.</li>
-            <li>Monnaie sérialisée en chaînes à 2 décimales.</li>
-            <li>Nesting conservé en vrais tableaux/objets.</li>
-            <li><code class="inline">source_url</code> et <code class="inline">category_url</code> privilégiés pour le matching.</li>
+            <li><code class="inline">/openapi.json</code> est public pour les outils d’intégration et de génération de clients.</li>
+            <li><code class="inline">/api/openapi.json</code> reste disponible comme alias de compatibilité.</li>
+            <li><code class="inline">/healthz</code> est public pour Dokploy / Traefik / health checks.</li>
+            <li>Les endpoints métier <code class="inline">/api/*</code> exigent <code class="inline">Authorization: Bearer &lt;token&gt;</code> quand <code class="inline">FAST_FASHION_API_TOKEN</code> est défini.</li>
+            <li>Le dashboard HTML peut rester public même si l’API est privée.</li>
           </ul>
         </section>
 
         <section class="card">
-          <h2>Base URLs</h2>
+          <h2>Entrées principales</h2>
           <table class="table">
-            <tr><th>OpenAPI</th><td><code class="inline">/openapi.json</code></td></tr>
+            <tr><th>Spec publique</th><td><code class="inline">/openapi.json</code></td></tr>
+            <tr><th>Alias spec</th><td><code class="inline">/api/openapi.json</code></td></tr>
             <tr><th>Health</th><td><code class="inline">/healthz</code></td></tr>
+            <tr><th>Datasets</th><td><code class="inline">/api/datasets</code></td></tr>
             <tr><th>Catégories</th><td><code class="inline">/api/categories</code></td></tr>
-            <tr><th>Produit</th><td><code class="inline">/api/products/{goods_id}</code></td></tr>
-            <tr><th>Auth</th><td><code class="inline">Authorization: Bearer &lt;token&gt;</code></td></tr>
-            <tr><th>Version</th><td><code class="inline">1.0.2</code></td></tr>
+            <tr><th>Produits</th><td><code class="inline">/api/products</code></td></tr>
+            <tr><th>Version spec</th><td><code class="inline">1.1.0</code></td></tr>
           </table>
         </section>
       </div>
 
       <section class="card">
         <div class="section-title">
-          <h2>Endpoints</h2>
-          <span class="muted small">Tous en lecture seule</span>
+          <h2>Endpoints publics</h2>
+          <span class="muted small">Sans Bearer token</span>
         </div>
-
-        <div style="margin-top: 14px;" class="grid">
+        <div class="subgrid">
           <article class="card" style="background: var(--panel-2);">
             <div class="endpoint"><span class="method get">GET</span><span class="path">/healthz</span></div>
-            <p class="muted small">Endpoint de santé public pour Dokploy, reverse proxies et checks de disponibilité. Il ne demande pas de token Bearer.</p>
+            <p class="muted small">Endpoint de readiness pour le déploiement. Retourne <code class="inline">200</code> quand le service est prêt et <code class="inline">503</code> sinon.</p>
+            <div class="response-list">
+              <div class="response-item"><strong>200 / 503</strong><span>Schéma: <code class="inline">HealthResponse</code></span></div>
+            </div>
             <pre>{
   "data": {
     "ok": true,
@@ -241,113 +259,117 @@
 
           <article class="card" style="background: var(--panel-2);">
             <div class="endpoint"><span class="method get">GET</span><span class="path">/openapi.json</span></div>
-            <p class="muted small">Document OpenAPI public pour l’intégration client, les SDK generators, Swagger-compatible tooling et la découverte de l’API.</p>
-            <pre>{
-  "openapi": "3.1.0",
-  "info": {
-    "title": "Fast Fashion Dashboard API"
-  },
-  "paths": {
-    "/healthz": {"get": {...}},
-    "/api/products": {"get": {...}}
-  }
-}</pre>
+            <p class="muted small">Spec OpenAPI publique. C’est le point d’entrée recommandé pour Swagger-compatible tooling, générateurs de SDK et exploration machine-readable.</p>
+            <div class="response-list">
+              <div class="response-item"><strong>200</strong><span>Schéma: <code class="inline">OpenApiDocument</code></span></div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="section-title">
+          <h2>Endpoints API principaux</h2>
+          <span class="muted small">Protégés par Bearer token</span>
+        </div>
+        <div class="subgrid">
+          <article class="card" style="background: var(--panel-2);">
+            <div class="endpoint"><span class="method get">GET</span><span class="path">/api/datasets</span></div>
+            <p class="muted small">Retourne les métadonnées des datasets exposés. Peut aussi filtrer un dataset précis.</p>
+            <div class="param-list">
+              <div class="param-item"><strong>dataset</strong><span>query, optionnel — valeurs: <code class="inline">shein</code>, <code class="inline">asos</code></span></div>
+            </div>
+            <div class="response-list">
+              <div class="response-item"><strong>200</strong><span>Schéma: <code class="inline">DatasetsResponse</code></span></div>
+              <div class="response-item"><strong>401</strong><span>Schéma: <code class="inline">ErrorResponse</code></span></div>
+            </div>
           </article>
 
           <article class="card" style="background: var(--panel-2);">
             <div class="endpoint"><span class="method get">GET</span><span class="path">/api/categories</span></div>
-            <p class="muted small">Liste les catégories dans un format stable.</p>
-            <pre>{
-  "dataset": {"id": "shein", "label": "Shein Bright Data sample"},
-  "data": [
-    {
-      "name": "Dresses",
-      "slug": "dresses",
-      "top_category_name": "Dresses",
-      "source_url": "https://...",
-      "image_url": "https://..."
-    }
-  ],
-  "pagination": {"page": 1, "pageSize": 100, "total": 502, "totalPages": 6}
-}</pre>
+            <p class="muted small">Liste paginée des catégories stables d’un dataset.</p>
+            <div class="param-list">
+              <div class="param-item"><strong>dataset</strong><span>query, optionnel — défaut <code class="inline">shein</code></span></div>
+              <div class="param-item"><strong>page</strong><span>query, optionnel — pagination 1-based</span></div>
+              <div class="param-item"><strong>pageSize</strong><span>query, optionnel — max 200</span></div>
+            </div>
+            <div class="response-list">
+              <div class="response-item"><strong>200</strong><span>Schéma: <code class="inline">CategoriesListResponse</code></span></div>
+              <div class="response-item"><strong>400 / 401</strong><span>Schéma: <code class="inline">ErrorResponse</code></span></div>
+            </div>
           </article>
 
           <article class="card" style="background: var(--panel-2);">
             <div class="endpoint"><span class="method get">GET</span><span class="path">/api/categories/{slug}</span></div>
-            <p class="muted small">Retourne une seule catégorie.</p>
-            <pre>{
-  "dataset": {...},
-  "data": {
-    "name": "Dresses",
-    "slug": "dresses",
-    "source_url": "https://..."
-  }
-}</pre>
+            <p class="muted small">Détail d’une catégorie par slug stable.</p>
+            <div class="param-list">
+              <div class="param-item"><strong>slug</strong><span>path, requis</span></div>
+              <div class="param-item"><strong>dataset</strong><span>query, optionnel</span></div>
+            </div>
+            <div class="response-list">
+              <div class="response-item"><strong>200</strong><span>Schéma: <code class="inline">CategoryDetailResponse</code></span></div>
+              <div class="response-item"><strong>404</strong><span>Schéma: <code class="inline">ErrorResponse</code></span></div>
+            </div>
           </article>
 
           <article class="card" style="background: var(--panel-2);">
             <div class="endpoint"><span class="method get">GET</span><span class="path">/api/products</span></div>
-            <p class="muted small">Liste les produits. Utilise <code class="inline">format=resource</code> pour le schéma externe.</p>
-            <pre>{
-  "dataset": {...},
-  "data": [
-    {
-      "goods_id": "shein:123",
-      "goods_sn": "123",
-      "spu": "123",
-      "name": "Long Dress",
-      "retail_price": "10.49",
-      "sale_price": "10.49",
-      "images": ["https://..."],
-      "attributes": [{"name": "brand", "value": "SHEIN"}]
-    }
-  ],
-  "pagination": {...},
-  "categories": [...]
-}</pre>
+            <p class="muted small">Liste paginée des produits. Peut retourner soit le payload legacy dashboard, soit le payload resource stable.</p>
+            <div class="param-list">
+              <div class="param-item"><strong>dataset</strong><span>query — <code class="inline">shein</code> ou <code class="inline">asos</code></span></div>
+              <div class="param-item"><strong>search</strong><span>query — recherche plein texte</span></div>
+              <div class="param-item"><strong>category</strong><span>query — filtre catégorie</span></div>
+              <div class="param-item"><strong>sort</strong><span>query — <code class="inline">relevance</code>, <code class="inline">price-asc</code>, <code class="inline">price-desc</code>, <code class="inline">rating-desc</code>, <code class="inline">reviews-desc</code>, <code class="inline">name-asc</code></span></div>
+              <div class="param-item"><strong>imagesOnly</strong><span>query — booléen</span></div>
+              <div class="param-item"><strong>page</strong> <span>query — pagination</span></div>
+              <div class="param-item"><strong>pageSize</strong><span>query — max 200</span></div>
+              <div class="param-item"><strong>format</strong><span>query — <code class="inline">legacy</code> ou <code class="inline">resource</code></span></div>
+            </div>
+            <div class="response-list">
+              <div class="response-item"><strong>200</strong><span>Schéma: <code class="inline">ProductsLegacyResponse</code> ou <code class="inline">ProductsResourceResponse</code></span></div>
+              <div class="response-item"><strong>400 / 401</strong><span>Schéma: <code class="inline">ErrorResponse</code></span></div>
+            </div>
           </article>
 
           <article class="card" style="background: var(--panel-2);">
             <div class="endpoint"><span class="method get">GET</span><span class="path">/api/products/{goods_id}</span></div>
-            <p class="muted small">Retourne un produit unique par identifiant stable.</p>
-            <pre>{
-  "dataset": {...},
-  "data": {
-    "goods_id": "shein:123",
-    "category_url": "http://host/api/categories/dresses?dataset=shein",
-    "product_url": "https://..."
-  }
-}</pre>
+            <p class="muted small">Détail produit unique, avec payload dashboard legacy + payload resource stable dans la même réponse.</p>
+            <div class="param-list">
+              <div class="param-item"><strong>goods_id</strong><span>path, requis — exemple <code class="inline">shein:123</code></span></div>
+              <div class="param-item"><strong>dataset</strong><span>query, optionnel</span></div>
+            </div>
+            <div class="response-list">
+              <div class="response-item"><strong>200</strong><span>Schéma: <code class="inline">ProductDetailResponse</code></span></div>
+              <div class="response-item"><strong>404</strong><span>Schéma: <code class="inline">ErrorResponse</code></span></div>
+            </div>
           </article>
         </div>
       </section>
 
       <div class="grid two">
         <section class="card">
-          <h2>Paramètres utiles</h2>
-          <table class="table">
-            <tr><th>dataset</th><td><code class="inline">shein</code> ou <code class="inline">asos</code></td></tr>
-            <tr><th>page</th><td>Pagination, commence à 1</td></tr>
-            <tr><th>pageSize</th><td>Jusqu’à 200</td></tr>
-            <tr><th>search</th><td>Recherche texte</td></tr>
-            <tr><th>category</th><td>Filtre catégorie</td></tr>
-            <tr><th>imagesOnly</th><td><code class="inline">true</code>/<code class="inline">false</code></td></tr>
-            <tr><th>sort</th><td><code class="inline">relevance</code>, <code class="inline">price-asc</code>, <code class="inline">price-desc</code>, <code class="inline">rating-desc</code>, <code class="inline">reviews-desc</code>, <code class="inline">name-asc</code></td></tr>
-            <tr><th>format</th><td><code class="inline">legacy</code> ou <code class="inline">resource</code></td></tr>
-          </table>
+          <h2>Objets documentés</h2>
+          <ul>
+            <li><code class="inline">DatasetMeta</code></li>
+            <li><code class="inline">CategoryResource</code></li>
+            <li><code class="inline">ProductResource</code></li>
+            <li><code class="inline">LegacyProduct</code></li>
+            <li><code class="inline">Pagination</code></li>
+            <li><code class="inline">HealthResponse</code></li>
+            <li><code class="inline">S3Config</code>, <code class="inline">S3JobState</code>, <code class="inline">S3JobDetailResponse</code></li>
+            <li><code class="inline">ErrorResponse</code></li>
+          </ul>
         </section>
 
         <section class="card">
-          <h2>Compatibilité importante</h2>
-          <ul>
-            <li>Les champs monétaires restent des chaînes.</li>
-            <li>Les données imbriquées restent des objets/arrays réels.</li>
-            <li>Les schémas sont stables et lisibles par des services externes.</li>
-            <li>Le dashboard peut continuer à consommer le format legacy si nécessaire.</li>
-            <li>Quand <code class="inline">FAST_FASHION_API_TOKEN</code> est défini, tous les endpoints <code class="inline">/api/*</code> exigent le header Bearer.</li>
-            <li>Le HTML du dashboard et <code class="inline">/healthz</code> ne sont pas protégés par ce token API.</li>
-          </ul>
-          <p class="muted small">Tu peux aussi lire la spec brute via <code class="inline">/openapi.json</code> (ou l’alias <code class="inline">/api/openapi.json</code>).</p>
+          <h2>Pourquoi l’ancienne spec semblait vide</h2>
+          <p class="muted small">
+            L’ancienne version exposait surtout des <code class="inline">summary</code> sans vrai contrat de paramètres, réponses ni schémas.
+            La spec actuelle documente maintenant les structures et comportements essentiels. Pour la version brute machine-readable,
+            utilise <code class="inline">/openapi.json</code>.
+          </p>
+          <pre>curl https://ton-domaine/openapi.json
+curl -H "Authorization: Bearer &lt;token&gt;" https://ton-domaine/api/products?dataset=shein&format=resource</pre>
         </section>
       </div>
     </div>
