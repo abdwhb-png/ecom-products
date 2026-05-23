@@ -422,32 +422,20 @@ OPENAPI_SPEC = {
             },
             'ProductsLegacyResponse': {
                 'type': 'object',
-                'required': ['dataset', 'products', 'pagination', 'categories'],
+                'required': ['dataset', 'products', 'pagination'],
                 'properties': {
                     'dataset': {'$ref': '#/components/schemas/DatasetMeta'},
                     'products': {'type': 'array', 'items': {'$ref': '#/components/schemas/LegacyProduct'}},
                     'pagination': {'$ref': '#/components/schemas/Pagination'},
-                    'categories': {
-                        'type': 'array',
-                        'items': {
-                            'type': 'object',
-                            'required': ['name', 'count'],
-                            'properties': {
-                                'name': {'type': 'string'},
-                                'count': {'type': 'integer'},
-                            },
-                        },
-                    },
                 },
             },
             'ProductsResourceResponse': {
                 'type': 'object',
-                'required': ['dataset', 'data', 'pagination', 'categories'],
+                'required': ['dataset', 'data', 'pagination'],
                 'properties': {
                     'dataset': {'$ref': '#/components/schemas/DatasetMeta'},
                     'data': {'type': 'array', 'items': {'$ref': '#/components/schemas/ProductResource'}},
                     'pagination': {'$ref': '#/components/schemas/Pagination'},
-                    'categories': {'type': 'array', 'items': {'$ref': '#/components/schemas/CategoryResource'}},
                 },
             },
             'ProductDetailResponse': {
@@ -2016,18 +2004,17 @@ class Handler(SimpleHTTPRequestHandler):
             ''',
             [*values, page_size, offset],
         ).fetchall()
-        category_rows = self._category_rows(conn, dataset_id)
         base_url = get_base_url(self)
         resource_products = [self._product_resource(row, dataset_row, base_url, conn) for row in product_rows]
         conn.close()
 
         if format_mode == 'resource':
-            json_response(self, {'dataset': dict(dataset_row), 'data': resource_products, 'pagination': {'page': page, 'pageSize': page_size, 'total': total, 'totalPages': total_pages, 'from': 0 if total == 0 else offset + 1, 'to': min(offset + page_size, total)}, 'categories': [self._category_resource(row) | {'count': row['count']} for row in category_rows if row['name']]})
+            json_response(self, {'dataset': dict(dataset_row), 'data': resource_products, 'pagination': {'page': page, 'pageSize': page_size, 'total': total, 'totalPages': total_pages, 'from': 0 if total == 0 else offset + 1, 'to': min(offset + page_size, total)}})
             return
 
         legacy_products = [self._legacy_product_payload(row, dataset_row, base_url, product) for row, product in zip(product_rows, resource_products)]
 
-        json_response(self, {'dataset': dict(dataset_row), 'products': legacy_products, 'pagination': {'page': page, 'pageSize': page_size, 'total': total, 'totalPages': total_pages, 'from': 0 if total == 0 else offset + 1, 'to': min(offset + page_size, total)}, 'categories': [{'name': row['name'], 'count': row['count']} for row in category_rows if row['name']]})
+        json_response(self, {'dataset': dict(dataset_row), 'products': legacy_products, 'pagination': {'page': page, 'pageSize': page_size, 'total': total, 'totalPages': total_pages, 'from': 0 if total == 0 else offset + 1, 'to': min(offset + page_size, total)}})
 
     def handle_product(self, goods_id, query_string):
         params = parse_qs(query_string)

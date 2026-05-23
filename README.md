@@ -111,6 +111,7 @@ Returns dataset metadata.
 
 ### `GET /api/categories`
 Returns stable category resources.
+This endpoint is the dedicated source for category filters in the frontend.
 
 Query params:
 - `dataset`
@@ -124,7 +125,8 @@ Query params:
 - `dataset`
 
 ### `GET /api/products`
-Returns products.
+Returns products only.
+This endpoint no longer embeds categories; use `/api/categories` separately.
 
 Query params:
 - `dataset`

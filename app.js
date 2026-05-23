@@ -13,6 +13,7 @@ const state = {
   page: Math.max(1, Number.parseInt(query.get('page') || '1', 10) || 1),
   pageSize: Math.max(1, Number.parseInt(query.get('pageSize') || '24', 10) || 24),
   currentPayload: null,
+  currentCategories: [],
   categoryPage: 1,
   categoryPageSize: 24,
   productDetailCache: {},
@@ -112,12 +113,12 @@ function bindEvents() {
 
   els.catPrevBtn.addEventListener('click', async () => {
     state.categoryPage = Math.max(1, state.categoryPage - 1);
-    renderCategorySelect(state.currentPayload?.categories || []);
+    renderCategorySelect(state.currentCategories || []);
   });
 
   els.catNextBtn.addEventListener('click', async () => {
     state.categoryPage += 1;
-    renderCategorySelect(state.currentPayload?.categories || []);
+    renderCategorySelect(state.currentCategories || []);
   });
 
   els.sortSelect.addEventListener('change', async (event) => {
@@ -278,9 +279,13 @@ async function refreshUI(options = {}) {
   setContentLoading(true, loadingTitle, loadingText);
   els.datasetLoader.classList.remove('hidden');
   try {
-    const payload = await fetchProducts();
+    const [payload, categoriesPayload] = await Promise.all([
+      fetchProducts(),
+      fetchCategories(),
+    ]);
     state.currentPayload = payload;
-    render(payload);
+    state.currentCategories = categoriesPayload.data || [];
+    render(payload, state.currentCategories);
     updateStatus('Catalogue chargé localement.', 'success');
   } catch (error) {
     console.error(error);
@@ -313,12 +318,27 @@ async function fetchProducts() {
   return payload;
 }
 
+async function fetchCategories() {
+  const params = new URLSearchParams({
+    dataset: state.currentDataset,
+    page: '1',
+    pageSize: '200',
+  });
+  const response = await fetch(`/api/categories?${params.toString()}`, { headers: getApiHeaders() });
+  if (response.status === 401) {
+    setApiLocked('Token invalide ou manquant.');
+    throw new Error('Autorisation requise');
+  }
+  if (!response.ok) throw new Error(`Impossible de charger les catégories (${response.status})`);
+  return response.json();
+}
 
-function render(payload) {
+
+function render(payload, categories = []) {
   const dataset = payload.dataset;
   const products = payload.products || [];
-  const categories = payload.categories || [];
   state.currentPayload = payload;
+  state.currentCategories = categories;
   const pagination = payload.pagination || { page: 1, totalPages: 1, total: 0, from: 0, to: 0 };
 
   els.activeDatasetLabel.textContent = dataset?.label || '—';
