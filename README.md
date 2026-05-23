@@ -137,8 +137,12 @@ Query params:
 - `savedOnS3` — only products whose runtime S3 state is marked as saved in SQLite
 
 Dashboard notes:
-- the category stat on the homepage reflects the total number of available categories loaded from `/api/categories`, not only the first UI page of category options
+- the category stat on the homepage reflects the total number of available categories from `/api/categories` pagination metadata, not just the current category-options page
+- the category select itself is paginated server-side in the frontend to stay responsive on very large datasets such as ASOS
 - the S3 job detail modal paginates processed items 50 per page and uses a fixed top-right close icon
+- ASOS S3 jobs now use a more conservative upload concurrency cap server-side to reduce timeout risk on slower hosts/networks
+- S3 status/config GET endpoints now accept the deployment bearer token as well as the short-lived S3 UI cookie, matching the documented API auth model for remote API checks
+- the runtime SQLite database now creates a composite index on `s3_objects(dataset_id, saved_on_s3, product_id)` to keep `savedOnS3=true` product queries responsive on large datasets such as ASOS
 - `page`
 - `pageSize`
 - `format` (`legacy` or `resource`)

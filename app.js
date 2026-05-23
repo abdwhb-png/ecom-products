@@ -15,6 +15,7 @@ const state = {
   pageSize: Math.max(1, Number.parseInt(query.get('pageSize') || '24', 10) || 24),
   currentPayload: null,
   currentCategories: [],
+  currentCategoryPagination: { page: 1, pageSize: 24, total: 0, totalPages: 1, from: 0, to: 0 },
   categoryPage: 1,
   categoryPageSize: 24,
   productDetailCache: {},
@@ -115,12 +116,12 @@ function bindEvents() {
 
   els.catPrevBtn.addEventListener('click', async () => {
     state.categoryPage = Math.max(1, state.categoryPage - 1);
-    renderCategorySelect(state.currentCategories || []);
+    await refreshCategoryOptions();
   });
 
   els.catNextBtn.addEventListener('click', async () => {
     state.categoryPage += 1;
-    renderCategorySelect(state.currentCategories || []);
+    await refreshCategoryOptions();
   });
 
   els.sortSelect.addEventListener('change', async (event) => {
@@ -298,7 +299,8 @@ async function refreshUI(options = {}) {
     ]);
     state.currentPayload = payload;
     state.currentCategories = categoriesPayload.data || [];
-    render(payload, state.currentCategories);
+    state.currentCategoryPagination = categoriesPayload.pagination || { page: state.categoryPage, pageSize: state.categoryPageSize, total: 0, totalPages: 1, from: 0, to: 0 };
+    render(payload, state.currentCategories, state.currentCategoryPagination);
     updateStatus('Catalogue chargé localement.', 'success');
   } catch (error) {
     console.error(error);
@@ -335,8 +337,8 @@ async function fetchProducts() {
 async function fetchCategories() {
   const params = new URLSearchParams({
     dataset: state.currentDataset,
-    page: '1',
-    pageSize: '5000',
+    page: String(state.categoryPage),
+    pageSize: String(state.categoryPageSize),
   });
   const response = await fetch(`/api/categories?${params.toString()}`, { headers: getApiHeaders() });
   if (response.status === 401) {
@@ -348,54 +350,72 @@ async function fetchCategories() {
 }
 
 
-function render(payload, categories = []) {
+function render(payload, categories = [], categoryPagination = null) {
   const dataset = payload.dataset;
   const products = payload.products || [];
   state.currentPayload = payload;
   state.currentCategories = categories;
+  state.currentCategoryPagination = categoryPagination || state.currentCategoryPagination;
   const pagination = payload.pagination || { page: 1, totalPages: 1, total: 0, from: 0, to: 0 };
 
   els.activeDatasetLabel.textContent = dataset?.label || '—';
   els.resultsCount.textContent = new Intl.NumberFormat('fr-FR').format(pagination.total || 0);
-  const totalCategories = categories.length;
+  const totalCategories = Number(state.currentCategoryPagination?.total || categories.length || 0);
   els.categoryCount.textContent = new Intl.NumberFormat('fr-FR').format(totalCategories);
 
-  renderCategorySelect(categories);
-  renderSummary(dataset, categories, pagination);
+  renderCategorySelect(categories, state.currentCategoryPagination);
+  renderSummary(dataset, totalCategories, pagination);
   renderActiveFilters();
   renderPagination(pagination);
   renderProducts(products);
 }
 
-function renderCategorySelect(categories) {
-  const pageSize = state.categoryPageSize;
-  const totalPages = Math.max(1, Math.ceil((categories.length || 0) / pageSize));
+function renderCategorySelect(categories, categoryPagination = null) {
+  const totalPages = Math.max(1, Number(categoryPagination?.totalPages || 1));
   state.categoryPage = Math.min(state.categoryPage, totalPages);
-  const start = (state.categoryPage - 1) * pageSize;
-  const pageCategories = categories.slice(start, start + pageSize);
   const options = ['<option value="">Toutes les catégories</option>']
-    .concat(pageCategories.map((category) => {
+    .concat((categories || []).map((category) => {
       const label = `${truncate(category.name, 32)} (${category.count})`;
       return `<option value="${escapeHtml(category.name)}" title="${escapeHtml(category.name)}">${escapeHtml(label)}</option>`;
     }))
     .join('');
   els.categorySelect.innerHTML = options;
-  const categoryExists = categories.some((item) => item.name === state.category);
+  const categoryExists = (categories || []).some((item) => item.name === state.category);
   els.categorySelect.value = categoryExists ? state.category : '';
-  if (!categoryExists) state.category = '';
+  if (!categoryExists && state.category && state.categoryPage !== 1) {
+    // keep selected category filter across category-option pages
+    els.categorySelect.value = '';
+  }
   els.catPageIndicator.textContent = `${state.categoryPage} / ${totalPages}`;
   els.catPrevBtn.disabled = state.categoryPage <= 1;
   els.catNextBtn.disabled = state.categoryPage >= totalPages;
 }
 
-function renderSummary(dataset, categories, pagination) {
+function renderSummary(dataset, totalCategories, pagination) {
   els.summaryBar.innerHTML = `
     <span><strong>${new Intl.NumberFormat('fr-FR').format(dataset?.total_count || 0)}</strong> produits chargés</span>
     <span><strong>${new Intl.NumberFormat('fr-FR').format(pagination.total || 0)}</strong> résultats après filtres</span>
-    <span><strong>${new Intl.NumberFormat('fr-FR').format(categories.length)}</strong> catégories repérées</span>
+    <span><strong>${new Intl.NumberFormat('fr-FR').format(totalCategories || 0)}</strong> catégories repérées</span>
     <span><strong>${new Intl.NumberFormat('fr-FR').format(dataset?.with_images_count || 0)}</strong> fiches avec image</span>
     <span><strong>${new Intl.NumberFormat('fr-FR').format(dataset?.with_reviews_count || 0)}</strong> fiches avec avis > 0</span>
   `;
+}
+
+async function refreshCategoryOptions() {
+  try {
+    const categoriesPayload = await fetchCategories();
+    state.currentCategories = categoriesPayload.data || [];
+    state.currentCategoryPagination = categoriesPayload.pagination || { page: state.categoryPage, pageSize: state.categoryPageSize, total: 0, totalPages: 1, from: 0, to: 0 };
+    renderCategorySelect(state.currentCategories, state.currentCategoryPagination);
+    const totalCategories = Number(state.currentCategoryPagination?.total || state.currentCategories.length || 0);
+    els.categoryCount.textContent = new Intl.NumberFormat('fr-FR').format(totalCategories);
+    if (state.currentPayload?.dataset && state.currentPayload?.pagination) {
+      renderSummary(state.currentPayload.dataset, totalCategories, state.currentPayload.pagination);
+    }
+  } catch (error) {
+    console.error(error);
+    updateStatus(`Erreur catégories: ${error.message}`, 'error');
+  }
 }
 
 function renderActiveFilters() {

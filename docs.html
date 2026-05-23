@@ -216,6 +216,7 @@
             <li><code class="inline">/api/openapi.json</code> reste disponible comme alias de compatibilité.</li>
             <li><code class="inline">/healthz</code> est public pour Dokploy / Traefik / health checks.</li>
             <li>Les endpoints métier <code class="inline">/api/*</code> exigent <code class="inline">Authorization: Bearer &lt;token&gt;</code> quand <code class="inline">FAST_FASHION_API_TOKEN</code> est défini.</li>
+            <li>Les endpoints JSON S3 (<code class="inline">/api/s3/*</code>) acceptent aussi ce Bearer token pour l’automatisation distante; la page HTML <code class="inline">/s3</code> continue d’utiliser son cookie d’accès court vécu pour l’UI.</li>
             <li>Le dashboard HTML peut rester public même si l’API est privée.</li>
           </ul>
         </section>

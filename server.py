@@ -1277,6 +1277,7 @@ def db_connect():
     )
     conn.execute('CREATE INDEX IF NOT EXISTS idx_s3_objects_dataset_product ON s3_objects(dataset_id, product_id)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_s3_objects_saved ON s3_objects(saved_on_s3)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_s3_objects_dataset_saved_product ON s3_objects(dataset_id, saved_on_s3, product_id)')
     conn.execute(
         '''
         CREATE TABLE IF NOT EXISTS s3_jobs (
@@ -1417,6 +1418,10 @@ def api_unauthorized_response(handler):
             'X-Fast-Fashion-Auth-Required': 'true',
         },
     )
+
+
+def s3_access_is_valid(handler) -> bool:
+    return auth_required(handler) or api_token_is_valid(handler)
 
 
 def parse_positive_int(value, default, minimum=1, maximum=None):
@@ -1632,11 +1637,11 @@ class Handler(SimpleHTTPRequestHandler):
                 return html_response(self, content)
             if parsed.path == '/api/s3/auth-check':
                 return json_response(self, {'data': {'authenticated': auth_required(self)}})
-            if parsed.path == '/api/s3/config' and not auth_required(self):
+            if parsed.path == '/api/s3/config' and not s3_access_is_valid(self):
                 return error_response(self, 'Authentication required', HTTPStatus.UNAUTHORIZED, code='unauthorized')
-            if parsed.path == '/api/s3/jobs' and not auth_required(self):
+            if parsed.path == '/api/s3/jobs' and not s3_access_is_valid(self):
                 return error_response(self, 'Authentication required', HTTPStatus.UNAUTHORIZED, code='unauthorized')
-            if parsed.path.startswith('/api/s3/jobs/') and not auth_required(self):
+            if parsed.path.startswith('/api/s3/jobs/') and not s3_access_is_valid(self):
                 return error_response(self, 'Authentication required', HTTPStatus.UNAUTHORIZED, code='unauthorized')
             if parsed.path == '/api/s3/auth':
                 return self.handle_s3_auth()
@@ -2128,6 +2133,8 @@ class Handler(SimpleHTTPRequestHandler):
         source = (payload.get('source') or 'products').strip().lower()
         limit = parse_positive_int(payload.get('limit', 100), 100)
         concurrency = parse_positive_int(payload.get('concurrency', 4), 4, maximum=24)
+        if dataset_id == 'asos':
+            concurrency = min(concurrency, 2)
         bucket = (payload.get('bucket') or S3_STATE.get('config', {}).get('bucket') or _env_nonempty('S3_BUCKET') or '').strip()
         prefix = (payload.get('prefix') or S3_STATE.get('config', {}).get('prefix') or '').strip()
         if dataset_id not in ALLOWED_DATASETS:
