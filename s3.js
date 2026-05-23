@@ -438,24 +438,27 @@ function renderJobProgress(detail, { totalItems, processedCount, runningCount })
   const total = Math.max(1, totalItems || job.total || items.length || 1);
   const processed = Math.min(processedCount || 0, total);
   const pct = Math.min(100, Math.round((processed / total) * 100));
+  const page = Math.max(1, detail.page || 1);
+  const pageSize = Math.max(1, detail.page_size || state.detailPageSize || items.length || 1);
+  const pageStart = (page - 1) * pageSize;
+  const pageEndExclusive = Math.min(total, pageStart + pageSize);
   const activeWindowEnd = Math.min(total, processed + runningCount);
 
-  const slots = Array.from({ length: total }, (_, index) => {
-    const item = items[index] || null;
-    const isDone = index < processed && Boolean(item);
-    const isActive = job.status === 'running' && index >= processed && index < activeWindowEnd;
-    const isPending = !isDone && !isActive;
+  const slots = items.map((item, index) => {
+    const absoluteIndex = pageStart + index;
+    const isDone = absoluteIndex < processed;
+    const isActive = job.status === 'running' && absoluteIndex >= processed && absoluteIndex < activeWindowEnd;
     const tone = item ? getItemTone(item) : (isActive ? 'running' : 'pending');
     const label = item ? getItemNote(item, tone) : (isActive ? 'En cours' : 'En attente');
-    const title = item?.name || item?.goods_id || item?.product_id || `Item ${index + 1}`;
+    const title = item?.name || item?.goods_id || item?.product_id || `Item ${absoluteIndex + 1}`;
     const barPct = isDone ? 100 : isActive ? 62 : 12;
     const statusClass = isDone ? `is-${tone}` : isActive ? 'is-running' : 'is-pending';
     const statusText = isDone ? (tone === 'error' ? 'Erreur' : tone === 'warning' ? 'Ignoré' : 'Terminé') : (isActive ? 'Traitement' : 'En attente');
     const subText = item?.message ? escapeHtml(String(item.message)) : (isActive ? 'L’item est en cours de traitement.' : 'Pas encore traité.');
     return `
-      <article class="s3-job-progress-item ${statusClass}" aria-label="Item ${index + 1}, ${statusText}">
+      <article class="s3-job-progress-item ${statusClass}" aria-label="Item ${absoluteIndex + 1}, ${statusText}">
         <div class="s3-job-progress-item-top">
-          <span class="s3-job-progress-index">${String(index + 1).padStart(2, '0')}</span>
+          <span class="s3-job-progress-index">${String(absoluteIndex + 1).padStart(2, '0')}</span>
           <span class="job-pill job-${escapeHtml(item?.status || (isActive ? 'running' : 'queued'))}">${escapeHtml(statusText)}</span>
         </div>
         <strong class="s3-job-progress-title">${escapeHtml(title)}</strong>
@@ -474,7 +477,7 @@ function renderJobProgress(detail, { totalItems, processedCount, runningCount })
         <div>
           <p class="eyebrow">Progression par item</p>
           <h3>${processed}/${total} traités</h3>
-          <p class="muted small" style="margin: 6px 0 0;">Chaque item a son état visible, même quand il est encore en file ou en cours.</p>
+          <p class="muted small" style="margin: 6px 0 0;">Affichage paginé des items ${pageStart + 1}-${pageEndExclusive} sur ${total}. On évite ainsi de rendre tout le job d’un coup dans le navigateur.</p>
         </div>
         <div class="s3-job-progress-hero">
           <div class="s3-job-progress-meter">
