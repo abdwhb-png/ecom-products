@@ -131,7 +131,8 @@ Query params:
 - `search`
 - `category`
 - `sort`
-- `imagesOnly`
+- `imagesOnly` — only products that have at least one source image in the imported catalog
+- `savedOnS3` — only products whose runtime S3 state is marked as saved in SQLite
 - `page`
 - `pageSize`
 - `format` (`legacy` or `resource`)

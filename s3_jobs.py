@@ -7,7 +7,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
@@ -49,13 +49,21 @@ JOB_STATE_FIELDS = {field.name for field in fields(S3JobState)}
 
 
 class S3JobManager:
-    def __init__(self, store_path: str | Path | None = None, history_limit: int = DEFAULT_HISTORY_LIMIT):
+    def __init__(
+        self,
+        store_path: str | Path | None = None,
+        history_limit: int = DEFAULT_HISTORY_LIMIT,
+        load_jobs_fn: Callable[[], list[dict[str, Any]]] | None = None,
+        save_jobs_fn: Callable[[list[dict[str, Any]]], None] | None = None,
+    ):
         self._jobs: dict[str, S3JobState] = {}
         self._locks: dict[str, threading.Event] = {}
         self._mutex = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=2)
         self._store_path = Path(store_path) if store_path else Path(__file__).resolve().parent / 's3_jobs_state.json'
         self._history_limit = max(10, int(history_limit or DEFAULT_HISTORY_LIMIT))
+        self._load_jobs_fn = load_jobs_fn
+        self._save_jobs_fn = save_jobs_fn
         self._load_jobs()
 
     def list_jobs(self):
@@ -345,13 +353,19 @@ class S3JobManager:
         return f"{job.prefix.strip('/') + '/' if job.prefix else ''}{job.dataset_id}/{goods_id}/{digest}.jpg"
 
     def _load_jobs(self):
-        if not self._store_path.exists():
-            return
-        try:
-            payload = json.loads(self._store_path.read_text(encoding='utf-8'))
-        except Exception:
-            return
-        raw_jobs = payload.get('jobs') if isinstance(payload, dict) else payload
+        if self._load_jobs_fn:
+            try:
+                raw_jobs = self._load_jobs_fn()
+            except Exception:
+                return
+        else:
+            if not self._store_path.exists():
+                return
+            try:
+                payload = json.loads(self._store_path.read_text(encoding='utf-8'))
+            except Exception:
+                return
+            raw_jobs = payload.get('jobs') if isinstance(payload, dict) else payload
         if not isinstance(raw_jobs, list):
             return
         loaded: dict[str, S3JobState] = {}
@@ -432,8 +446,12 @@ class S3JobManager:
 
     def _persist_jobs_unlocked(self):
         self._prune_jobs_unlocked()
+        jobs_payload = [asdict(job) for job in self._sorted_jobs_unlocked()]
+        if self._save_jobs_fn:
+            self._save_jobs_fn(jobs_payload)
+            return
         payload = {
-            'jobs': [asdict(job) for job in self._sorted_jobs_unlocked()],
+            'jobs': jobs_payload,
         }
         self._store_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self._store_path.with_suffix(f'{self._store_path.suffix}.tmp')

@@ -204,7 +204,23 @@ def rebuild_db(force_download: bool = False):
     downloader = DatasetDownloadService(RETAINED_DATASETS, download_root=DOWNLOADS_DIR)
     artifacts = downloader.sync_all(force=force_download)
 
+    preserved_s3 = []
+    preserved_jobs = []
+    preserved_config = None
     if DB_PATH.exists():
+        previous = sqlite3.connect(DB_PATH)
+        try:
+            previous.row_factory = sqlite3.Row
+            table_names = {row[0] for row in previous.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            if 's3_objects' in table_names:
+                preserved_s3 = [dict(row) for row in previous.execute('SELECT * FROM s3_objects').fetchall()]
+            if 's3_jobs' in table_names:
+                preserved_jobs = [dict(row) for row in previous.execute('SELECT * FROM s3_jobs').fetchall()]
+            if 's3_config' in table_names:
+                preserved_config = previous.execute("SELECT * FROM s3_config WHERE config_key = 'config'").fetchone()
+                preserved_config = dict(preserved_config) if preserved_config else None
+        finally:
+            previous.close()
         DB_PATH.unlink()
 
     conn = sqlite3.connect(DB_PATH)
@@ -250,6 +266,47 @@ def rebuild_db(force_download: bool = False):
         )
         '''
     )
+    conn.execute(
+        '''
+        CREATE TABLE s3_config (
+            config_key TEXT PRIMARY KEY,
+            config_value TEXT NOT NULL,
+            updated_at REAL NOT NULL
+        )
+        '''
+    )
+    conn.execute(
+        '''
+        CREATE TABLE s3_objects (
+            goods_id TEXT PRIMARY KEY,
+            dataset_id TEXT NOT NULL,
+            product_id TEXT NOT NULL,
+            source_url TEXT,
+            s3_url TEXT,
+            bucket TEXT,
+            object_key TEXT,
+            source_image_urls_json TEXT NOT NULL DEFAULT '[]',
+            s3_image_urls_json TEXT NOT NULL DEFAULT '[]',
+            image_pairs_json TEXT NOT NULL DEFAULT '[]',
+            source_image_count INTEGER NOT NULL DEFAULT 0,
+            s3_image_count INTEGER NOT NULL DEFAULT 0,
+            failed_image_count INTEGER NOT NULL DEFAULT 0,
+            saved_on_s3 INTEGER NOT NULL DEFAULT 0,
+            saved_at REAL,
+            updated_at REAL NOT NULL
+        )
+        '''
+    )
+    conn.execute(
+        '''
+        CREATE TABLE s3_jobs (
+            job_id TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL,
+            started_at REAL,
+            updated_at REAL NOT NULL
+        )
+        '''
+    )
 
     def insert_many(rows):
         conn.executemany(
@@ -281,6 +338,39 @@ def rebuild_db(force_download: bool = False):
     conn.execute('CREATE INDEX idx_products_dataset_price ON products(dataset_id, price)')
     conn.execute('CREATE INDEX idx_products_dataset_image_count ON products(dataset_id, image_count)')
     conn.execute('CREATE INDEX idx_products_dataset_name ON products(dataset_id, name)')
+    conn.execute('CREATE INDEX idx_s3_objects_dataset_product ON s3_objects(dataset_id, product_id)')
+    conn.execute('CREATE INDEX idx_s3_objects_saved ON s3_objects(saved_on_s3)')
+    conn.execute('CREATE INDEX idx_s3_jobs_started_at ON s3_jobs(started_at DESC)')
+    conn.commit()
+
+    if preserved_config:
+        conn.execute(
+            'INSERT INTO s3_config (config_key, config_value, updated_at) VALUES (?, ?, ?)',
+            (preserved_config['config_key'], preserved_config['config_value'], preserved_config['updated_at']),
+        )
+    if preserved_s3:
+        conn.executemany(
+            '''
+            INSERT INTO s3_objects (
+                goods_id, dataset_id, product_id, source_url, s3_url, bucket, object_key,
+                source_image_urls_json, s3_image_urls_json, image_pairs_json,
+                source_image_count, s3_image_count, failed_image_count, saved_on_s3, saved_at, updated_at
+            ) VALUES (
+                :goods_id, :dataset_id, :product_id, :source_url, :s3_url, :bucket, :object_key,
+                :source_image_urls_json, :s3_image_urls_json, :image_pairs_json,
+                :source_image_count, :s3_image_count, :failed_image_count, :saved_on_s3, :saved_at, :updated_at
+            )
+            ''',
+            preserved_s3,
+        )
+    if preserved_jobs:
+        conn.executemany(
+            '''
+            INSERT INTO s3_jobs (job_id, payload_json, started_at, updated_at)
+            VALUES (:job_id, :payload_json, :started_at, :updated_at)
+            ''',
+            preserved_jobs,
+        )
     conn.commit()
 
     for artifact in artifacts:

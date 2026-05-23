@@ -26,10 +26,10 @@ DB_PATH = Path(os.getenv('FAST_FASHION_DB_PATH', str(ROOT / 'catalog.db')))
 DOCS_PATH = ROOT / 'docs.html'
 S3_PAGE_PATH = ROOT / 's3.html'
 S3_STATE_PATH = ROOT / 's3_state.json'
+S3_JOBS_STATE_PATH = ROOT / 's3_jobs_state.json'
 ALLOWED_DATASETS = {'shein', 'asos'}
 DEFAULT_PAGE_SIZE = 24
 MAX_PAGE_SIZE = 200
-S3_JOB_MANAGER = S3JobManager()
 S3_STATE: dict = {'config': {}, 'objects': {}}
 S3_STATE_MTIME = 0.0
 
@@ -169,7 +169,13 @@ OPENAPI_SPEC = {
             'imagesOnly': {
                 'name': 'imagesOnly',
                 'in': 'query',
-                'description': 'When true, returns only products that have at least one source image.',
+                'description': 'When true, returns only products that have at least one source image in the imported catalog.',
+                'schema': {'type': 'boolean', 'default': False},
+            },
+            'savedOnS3': {
+                'name': 'savedOnS3',
+                'in': 'query',
+                'description': 'When true, returns only products whose runtime S3 state is marked as saved in SQLite.',
                 'schema': {'type': 'boolean', 'default': False},
             },
             'format': {
@@ -744,6 +750,7 @@ OPENAPI_SPEC = {
                     {'$ref': '#/components/parameters/categoryFilter'},
                     {'$ref': '#/components/parameters/sort'},
                     {'$ref': '#/components/parameters/imagesOnly'},
+                    {'$ref': '#/components/parameters/savedOnS3'},
                     {'$ref': '#/components/parameters/page'},
                     {'$ref': '#/components/parameters/pageSize'},
                     {'$ref': '#/components/parameters/format'},
@@ -955,36 +962,280 @@ OPENAPI_SPEC = {
 }
 
 
-def load_s3_state():
-    global S3_STATE, S3_STATE_MTIME
+def _sanitize_s3_config(config: dict | None) -> dict:
+    cleaned = dict(config or {})
+    for secret_key in ('aws_access_key_id', 'aws_secret_access_key', 'aws_session_token'):
+        cleaned.pop(secret_key, None)
+    return cleaned
+
+
+def _normalize_s3_object(goods_id: str, payload: dict | None) -> dict | None:
+    if not isinstance(payload, dict):
+        return None
+    source_urls = [str(url).strip() for url in (payload.get('source_image_urls') or []) if isinstance(url, str) and str(url).strip()]
+    s3_urls = [str(url).strip() for url in (payload.get('s3_image_urls') or []) if isinstance(url, str) and str(url).strip()]
+    image_pairs = []
+    for pair in payload.get('image_pairs') or []:
+        if not isinstance(pair, dict):
+            continue
+        source_url = str(pair.get('source_url') or '').strip()
+        s3_url = str(pair.get('s3_url') or '').strip()
+        if not source_url or not s3_url:
+            continue
+        image_pairs.append({
+            'source_url': source_url,
+            's3_url': s3_url,
+            'key': pair.get('key'),
+            'status': pair.get('status'),
+        })
+    return {
+        'dataset_id': str(payload.get('dataset_id') or '').strip() or goods_id.split(':', 1)[0],
+        'product_id': str(payload.get('product_id') or '').strip() or goods_id.split(':', 1)[1],
+        'goods_id': goods_id,
+        'source_url': str(payload.get('source_url') or '').strip() or (source_urls[0] if source_urls else None),
+        's3_url': str(payload.get('s3_url') or '').strip() or (s3_urls[0] if s3_urls else None),
+        'bucket': str(payload.get('bucket') or '').strip() or None,
+        'key': payload.get('key'),
+        'source_image_urls': source_urls,
+        's3_image_urls': s3_urls,
+        'image_pairs': image_pairs,
+        'source_image_count': int(payload.get('source_image_count') or len(source_urls)),
+        's3_image_count': int(payload.get('s3_image_count') or len(s3_urls)),
+        'failed_image_count': int(payload.get('failed_image_count') or 0),
+        'saved_on_s3': bool(payload.get('saved_on_s3')),
+        'saved_at': float(payload.get('saved_at') or time.time()),
+    }
+
+
+def _load_legacy_s3_state_payload() -> dict:
     if not S3_STATE_PATH.exists():
-        S3_STATE = {'config': {}, 'objects': {}}
-        S3_STATE_MTIME = 0.0
-        return S3_STATE
-    mtime = S3_STATE_PATH.stat().st_mtime
-    if mtime == S3_STATE_MTIME:
-        return S3_STATE
+        return {'config': {}, 'objects': {}}
     try:
         loaded = json.loads(S3_STATE_PATH.read_text(encoding='utf-8'))
-        S3_STATE = {
-            'config': loaded.get('config', {}),
-            'objects': loaded.get('objects', {}),
-        }
-        # Never persist secrets on disk.
-        for secret_key in ('aws_access_key_id', 'aws_secret_access_key', 'aws_session_token'):
-            S3_STATE['config'].pop(secret_key, None)
     except Exception:
-        S3_STATE = {'config': {}, 'objects': {}}
-    S3_STATE_MTIME = mtime
-    return S3_STATE
-
-
-def save_s3_state():
-    payload = {
-        'config': {k: v for k, v in S3_STATE.get('config', {}).items() if k not in {'aws_access_key_id', 'aws_secret_access_key', 'aws_session_token'}},
-        'objects': S3_STATE.get('objects', {}),
+        return {'config': {}, 'objects': {}}
+    return {
+        'config': _sanitize_s3_config(loaded.get('config', {})),
+        'objects': loaded.get('objects', {}) if isinstance(loaded.get('objects'), dict) else {},
     }
-    S3_STATE_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+
+
+def _load_legacy_s3_jobs_payload() -> list[dict]:
+    if not S3_JOBS_STATE_PATH.exists():
+        return []
+    try:
+        payload = json.loads(S3_JOBS_STATE_PATH.read_text(encoding='utf-8'))
+    except Exception:
+        return []
+    jobs = payload.get('jobs') if isinstance(payload, dict) else payload
+    return jobs if isinstance(jobs, list) else []
+
+
+def _maybe_migrate_legacy_s3_state(conn):
+    legacy = _load_legacy_s3_state_payload()
+    config = legacy.get('config', {})
+    objects = legacy.get('objects', {})
+    if config:
+        conn.execute(
+            '''
+            INSERT INTO s3_config (config_key, config_value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(config_key) DO UPDATE SET
+                config_value = excluded.config_value,
+                updated_at = excluded.updated_at
+            ''',
+            ('config', json.dumps(config, ensure_ascii=False), time.time()),
+        )
+    for goods_id, payload in objects.items():
+        normalized = _normalize_s3_object(goods_id, payload)
+        if not normalized:
+            continue
+        conn.execute(
+            '''
+            INSERT INTO s3_objects (
+                goods_id, dataset_id, product_id, source_url, s3_url, bucket, object_key,
+                source_image_urls_json, s3_image_urls_json, image_pairs_json,
+                source_image_count, s3_image_count, failed_image_count, saved_on_s3, saved_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(goods_id) DO UPDATE SET
+                dataset_id = excluded.dataset_id,
+                product_id = excluded.product_id,
+                source_url = excluded.source_url,
+                s3_url = excluded.s3_url,
+                bucket = excluded.bucket,
+                object_key = excluded.object_key,
+                source_image_urls_json = excluded.source_image_urls_json,
+                s3_image_urls_json = excluded.s3_image_urls_json,
+                image_pairs_json = excluded.image_pairs_json,
+                source_image_count = excluded.source_image_count,
+                s3_image_count = excluded.s3_image_count,
+                failed_image_count = excluded.failed_image_count,
+                saved_on_s3 = excluded.saved_on_s3,
+                saved_at = excluded.saved_at,
+                updated_at = excluded.updated_at
+            ''',
+            (
+                normalized['goods_id'],
+                normalized['dataset_id'],
+                normalized['product_id'],
+                normalized['source_url'],
+                normalized['s3_url'],
+                normalized['bucket'],
+                normalized['key'],
+                json.dumps(normalized['source_image_urls'], ensure_ascii=False),
+                json.dumps(normalized['s3_image_urls'], ensure_ascii=False),
+                json.dumps(normalized['image_pairs'], ensure_ascii=False),
+                normalized['source_image_count'],
+                normalized['s3_image_count'],
+                normalized['failed_image_count'],
+                1 if normalized['saved_on_s3'] else 0,
+                normalized['saved_at'],
+                time.time(),
+            ),
+        )
+
+
+def _maybe_migrate_legacy_s3_jobs(conn):
+    for raw_job in _load_legacy_s3_jobs_payload():
+        if not isinstance(raw_job, dict) or not raw_job.get('job_id'):
+            continue
+        conn.execute(
+            '''
+            INSERT INTO s3_jobs (job_id, payload_json, started_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(job_id) DO UPDATE SET
+                payload_json = excluded.payload_json,
+                started_at = excluded.started_at,
+                updated_at = excluded.updated_at
+            ''',
+            (
+                str(raw_job.get('job_id')),
+                json.dumps(raw_job, ensure_ascii=False, separators=(',', ':')),
+                float(raw_job.get('started_at') or time.time()),
+                time.time(),
+            ),
+        )
+
+
+def load_s3_state(conn=None, force=False):
+    global S3_STATE, S3_STATE_MTIME
+    if not force and S3_STATE_MTIME and (time.time() - S3_STATE_MTIME) < 2:
+        return S3_STATE
+    owns_conn = conn is None
+    conn = conn or db_connect()
+    try:
+        _maybe_migrate_legacy_s3_state(conn)
+        row = conn.execute('SELECT config_value FROM s3_config WHERE config_key = ?', ('config',)).fetchone()
+        config = {}
+        if row and row['config_value']:
+            try:
+                config = _sanitize_s3_config(json.loads(row['config_value']))
+            except Exception:
+                config = {}
+        objects = {}
+        rows = conn.execute(
+            '''
+            SELECT goods_id, dataset_id, product_id, source_url, s3_url, bucket, object_key,
+                   source_image_urls_json, s3_image_urls_json, image_pairs_json,
+                   source_image_count, s3_image_count, failed_image_count, saved_on_s3, saved_at
+            FROM s3_objects
+            '''
+        ).fetchall()
+        for row in rows:
+            goods_id = str(row['goods_id'])
+            objects[goods_id] = {
+                'dataset_id': row['dataset_id'],
+                'product_id': row['product_id'],
+                'goods_id': goods_id,
+                'source_url': row['source_url'],
+                's3_url': row['s3_url'],
+                'bucket': row['bucket'],
+                'key': row['object_key'],
+                'source_image_urls': parse_json_list(row['source_image_urls_json']),
+                's3_image_urls': parse_json_list(row['s3_image_urls_json']),
+                'image_pairs': parse_json_list(row['image_pairs_json']),
+                'source_image_count': int(row['source_image_count'] or 0),
+                's3_image_count': int(row['s3_image_count'] or 0),
+                'failed_image_count': int(row['failed_image_count'] or 0),
+                'saved_on_s3': bool(row['saved_on_s3']),
+                'saved_at': float(row['saved_at'] or 0),
+            }
+        S3_STATE = {'config': config, 'objects': objects}
+        S3_STATE_MTIME = time.time()
+        return S3_STATE
+    finally:
+        if owns_conn:
+            conn.close()
+
+
+def save_s3_state(conn=None):
+    global S3_STATE_MTIME
+    owns_conn = conn is None
+    conn = conn or db_connect()
+    try:
+        config = _sanitize_s3_config(S3_STATE.get('config', {}))
+        conn.execute(
+            '''
+            INSERT INTO s3_config (config_key, config_value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(config_key) DO UPDATE SET
+                config_value = excluded.config_value,
+                updated_at = excluded.updated_at
+            ''',
+            ('config', json.dumps(config, ensure_ascii=False), time.time()),
+        )
+        for goods_id, payload in (S3_STATE.get('objects', {}) or {}).items():
+            normalized = _normalize_s3_object(goods_id, payload)
+            if not normalized:
+                continue
+            conn.execute(
+                '''
+                INSERT INTO s3_objects (
+                    goods_id, dataset_id, product_id, source_url, s3_url, bucket, object_key,
+                    source_image_urls_json, s3_image_urls_json, image_pairs_json,
+                    source_image_count, s3_image_count, failed_image_count, saved_on_s3, saved_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(goods_id) DO UPDATE SET
+                    dataset_id = excluded.dataset_id,
+                    product_id = excluded.product_id,
+                    source_url = excluded.source_url,
+                    s3_url = excluded.s3_url,
+                    bucket = excluded.bucket,
+                    object_key = excluded.object_key,
+                    source_image_urls_json = excluded.source_image_urls_json,
+                    s3_image_urls_json = excluded.s3_image_urls_json,
+                    image_pairs_json = excluded.image_pairs_json,
+                    source_image_count = excluded.source_image_count,
+                    s3_image_count = excluded.s3_image_count,
+                    failed_image_count = excluded.failed_image_count,
+                    saved_on_s3 = excluded.saved_on_s3,
+                    saved_at = excluded.saved_at,
+                    updated_at = excluded.updated_at
+                ''',
+                (
+                    normalized['goods_id'],
+                    normalized['dataset_id'],
+                    normalized['product_id'],
+                    normalized['source_url'],
+                    normalized['s3_url'],
+                    normalized['bucket'],
+                    normalized['key'],
+                    json.dumps(normalized['source_image_urls'], ensure_ascii=False),
+                    json.dumps(normalized['s3_image_urls'], ensure_ascii=False),
+                    json.dumps(normalized['image_pairs'], ensure_ascii=False),
+                    normalized['source_image_count'],
+                    normalized['s3_image_count'],
+                    normalized['failed_image_count'],
+                    1 if normalized['saved_on_s3'] else 0,
+                    normalized['saved_at'],
+                    time.time(),
+                ),
+            )
+        conn.commit()
+        S3_STATE_MTIME = time.time()
+    finally:
+        if owns_conn:
+            conn.close()
 
 
 def db_connect():
@@ -1005,6 +1256,53 @@ def db_connect():
         '''
     )
     conn.execute('CREATE INDEX IF NOT EXISTS idx_image_status_dataset_ok ON image_status(dataset_id, ok)')
+    conn.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS s3_config (
+            config_key TEXT PRIMARY KEY,
+            config_value TEXT NOT NULL,
+            updated_at REAL NOT NULL
+        )
+        '''
+    )
+    conn.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS s3_objects (
+            goods_id TEXT PRIMARY KEY,
+            dataset_id TEXT NOT NULL,
+            product_id TEXT NOT NULL,
+            source_url TEXT,
+            s3_url TEXT,
+            bucket TEXT,
+            object_key TEXT,
+            source_image_urls_json TEXT NOT NULL DEFAULT '[]',
+            s3_image_urls_json TEXT NOT NULL DEFAULT '[]',
+            image_pairs_json TEXT NOT NULL DEFAULT '[]',
+            source_image_count INTEGER NOT NULL DEFAULT 0,
+            s3_image_count INTEGER NOT NULL DEFAULT 0,
+            failed_image_count INTEGER NOT NULL DEFAULT 0,
+            saved_on_s3 INTEGER NOT NULL DEFAULT 0,
+            saved_at REAL,
+            updated_at REAL NOT NULL
+        )
+        '''
+    )
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_s3_objects_dataset_product ON s3_objects(dataset_id, product_id)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_s3_objects_saved ON s3_objects(saved_on_s3)')
+    conn.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS s3_jobs (
+            job_id TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL,
+            started_at REAL,
+            updated_at REAL NOT NULL
+        )
+        '''
+    )
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_s3_jobs_started_at ON s3_jobs(started_at DESC)')
+    _maybe_migrate_legacy_s3_state(conn)
+    _maybe_migrate_legacy_s3_jobs(conn)
+    conn.commit()
     return conn
 
 
@@ -1250,6 +1548,61 @@ def normalize_goods_id(dataset_id, product_id):
     return f'{dataset_id}:{product_id}'
 
 
+def _load_s3_jobs_from_db() -> list[dict]:
+    conn = db_connect()
+    try:
+        _maybe_migrate_legacy_s3_jobs(conn)
+        rows = conn.execute('SELECT payload_json FROM s3_jobs ORDER BY COALESCE(started_at, 0) DESC, job_id DESC').fetchall()
+        payloads = []
+        for row in rows:
+            try:
+                payloads.append(json.loads(row['payload_json']))
+            except Exception:
+                continue
+        return payloads
+    finally:
+        conn.close()
+
+
+def _save_s3_jobs_to_db(jobs: list[dict]) -> None:
+    conn = db_connect()
+    try:
+        seen = set()
+        now = time.time()
+        for raw_job in jobs:
+            if not isinstance(raw_job, dict) or not raw_job.get('job_id'):
+                continue
+            job_id = str(raw_job.get('job_id'))
+            seen.add(job_id)
+            conn.execute(
+                '''
+                INSERT INTO s3_jobs (job_id, payload_json, started_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    payload_json = excluded.payload_json,
+                    started_at = excluded.started_at,
+                    updated_at = excluded.updated_at
+                ''',
+                (
+                    job_id,
+                    json.dumps(raw_job, ensure_ascii=False, separators=(',', ':')),
+                    float(raw_job.get('started_at') or now),
+                    now,
+                ),
+            )
+        if seen:
+            placeholders = ','.join('?' for _ in seen)
+            conn.execute(f'DELETE FROM s3_jobs WHERE job_id NOT IN ({placeholders})', tuple(seen))
+        else:
+            conn.execute('DELETE FROM s3_jobs')
+        conn.commit()
+    finally:
+        conn.close()
+
+
+S3_JOB_MANAGER = S3JobManager(load_jobs_fn=_load_s3_jobs_from_db, save_jobs_fn=_save_s3_jobs_to_db)
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
@@ -1379,9 +1732,37 @@ class Handler(SimpleHTTPRequestHandler):
             'image_url': row['image_url'] or None,
         }
 
-    def _s3_object_for(self, dataset_id, product_id):
-        load_s3_state()
-        return S3_STATE.get('objects', {}).get(normalize_goods_id(dataset_id, product_id))
+    def _s3_object_for(self, conn, dataset_id, product_id):
+        goods_id = normalize_goods_id(dataset_id, product_id)
+        row = conn.execute(
+            '''
+            SELECT goods_id, dataset_id, product_id, source_url, s3_url, bucket, object_key,
+                   source_image_urls_json, s3_image_urls_json, image_pairs_json,
+                   source_image_count, s3_image_count, failed_image_count, saved_on_s3, saved_at
+            FROM s3_objects
+            WHERE goods_id = ?
+            ''',
+            (goods_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            'goods_id': row['goods_id'],
+            'dataset_id': row['dataset_id'],
+            'product_id': row['product_id'],
+            'source_url': row['source_url'],
+            's3_url': row['s3_url'],
+            'bucket': row['bucket'],
+            'key': row['object_key'],
+            'source_image_urls': parse_json_list(row['source_image_urls_json']),
+            's3_image_urls': parse_json_list(row['s3_image_urls_json']),
+            'image_pairs': parse_json_list(row['image_pairs_json']),
+            'source_image_count': int(row['source_image_count'] or 0),
+            's3_image_count': int(row['s3_image_count'] or 0),
+            'failed_image_count': int(row['failed_image_count'] or 0),
+            'saved_on_s3': bool(row['saved_on_s3']),
+            'saved_at': float(row['saved_at'] or 0),
+        }
 
     def _source_images_for_row(self, row):
         urls = []
@@ -1430,7 +1811,7 @@ class Handler(SimpleHTTPRequestHandler):
         s3_urls = [pair['s3_url'] for pair in ordered_pairs if pair.get('s3_url')]
         return ordered_pairs, s3_urls
 
-    def _product_resource(self, row, dataset_row, base_url):
+    def _product_resource(self, row, dataset_row, base_url, conn=None):
         product_id = str(row['id']).strip()
         goods_id = normalize_goods_id(dataset_row['id'], product_id)
         name = (row['name'] or '').strip() or 'Sans nom'
@@ -1445,9 +1826,16 @@ class Handler(SimpleHTTPRequestHandler):
             if top and top != category_name:
                 category_tree.append({'name': top, 'url': category_url})
             category_tree.append({'name': category_name, 'url': category_url})
-        s3_object = self._s3_object_for(dataset_row['id'], product_id)
+        owns_conn = conn is None
+        conn = conn or db_connect()
+        try:
+            s3_object = self._s3_object_for(conn, dataset_row['id'], product_id)
+        finally:
+            if owns_conn:
+                conn.close()
         image_pairs, s3_image_urls = self._s3_images_for_product(s3_object, image_urls)
-        saved_on_s3 = bool(image_urls) and len(s3_image_urls) == len(image_urls)
+        saved_on_s3 = bool(s3_object and s3_object.get('saved_on_s3'))
+        s3_image_count = int((s3_object or {}).get('s3_image_count') or len(s3_image_urls))
         images = s3_image_urls if saved_on_s3 and s3_image_urls else image_urls
         primary_image = images[0] if images else None
         return {
@@ -1513,7 +1901,7 @@ class Handler(SimpleHTTPRequestHandler):
             'image_pairs': image_pairs,
             'saved_on_s3': saved_on_s3,
             's3_url': s3_image_urls[0] if s3_image_urls else None,
-            's3_image_count': len(s3_image_urls),
+            's3_image_count': s3_image_count,
         }
 
     def _legacy_product_payload(self, row, dataset_row, base_url, resource_product=None):
@@ -1590,6 +1978,7 @@ class Handler(SimpleHTTPRequestHandler):
         category = (params.get('category', [''])[0] or '').strip()
         sort = (params.get('sort', ['relevance'])[0] or 'relevance').strip()
         images_only = parse_bool(params.get('imagesOnly', ['false'])[0])
+        saved_on_s3_only = parse_bool(params.get('savedOnS3', ['false'])[0])
         page = parse_positive_int(params.get('page', ['1'])[0], 1)
         page_size = parse_positive_int(params.get('pageSize', [str(DEFAULT_PAGE_SIZE)])[0], DEFAULT_PAGE_SIZE, maximum=MAX_PAGE_SIZE)
         format_mode = (params.get('format', ['legacy'])[0] or 'legacy').strip().lower()
@@ -1606,6 +1995,8 @@ class Handler(SimpleHTTPRequestHandler):
             values.extend([f'%{category}%', f'%{category}%'])
         if images_only:
             where.append("p.image <> ''")
+        if saved_on_s3_only:
+            where.append("EXISTS (SELECT 1 FROM s3_objects o WHERE o.dataset_id = p.dataset_id AND o.product_id = p.id AND o.saved_on_s3 = 1)")
         where_sql = ' AND '.join(where)
         order_sql = ALLOWED_SORTS.get(sort, ALLOWED_SORTS['relevance'])
         conn = db_connect()
@@ -1626,9 +2017,9 @@ class Handler(SimpleHTTPRequestHandler):
             [*values, page_size, offset],
         ).fetchall()
         category_rows = self._category_rows(conn, dataset_id)
-        conn.close()
         base_url = get_base_url(self)
-        resource_products = [self._product_resource(row, dataset_row, base_url) for row in product_rows]
+        resource_products = [self._product_resource(row, dataset_row, base_url, conn) for row in product_rows]
+        conn.close()
 
         if format_mode == 'resource':
             json_response(self, {'dataset': dict(dataset_row), 'data': resource_products, 'pagination': {'page': page, 'pageSize': page_size, 'total': total, 'totalPages': total_pages, 'from': 0 if total == 0 else offset + 1, 'to': min(offset + page_size, total)}, 'categories': [self._category_resource(row) | {'count': row['count']} for row in category_rows if row['name']]})
@@ -1648,12 +2039,13 @@ class Handler(SimpleHTTPRequestHandler):
         conn = db_connect()
         dataset_row = self._dataset_row(conn, dataset_id)
         row = conn.execute('SELECT * FROM products WHERE dataset_id = ? AND id = ?', (dataset_id, product_id)).fetchone()
-        conn.close()
         if not row:
+            conn.close()
             return error_response(self, f'Product not found: {goods_id}', HTTPStatus.NOT_FOUND, code='not_found')
         base_url = get_base_url(self)
-        product_resource = self._product_resource(row, dataset_row, base_url)
+        product_resource = self._product_resource(row, dataset_row, base_url, conn)
         product_display = self._legacy_product_payload(row, dataset_row, base_url, product_resource)
+        conn.close()
         json_response(self, {
             'dataset': dict(dataset_row),
             'display': product_display,
@@ -1690,7 +2082,7 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def handle_s3_config_get(self):
-        load_s3_state()
+        load_s3_state(force=True)
         config = dict(S3_STATE.get('config', {}))
         config.pop('aws_access_key_id', None)
         config.pop('aws_secret_access_key', None)
@@ -1704,18 +2096,22 @@ class Handler(SimpleHTTPRequestHandler):
 
     def handle_s3_config_update(self):
         payload = self._read_json_body()
-        config = S3_STATE.setdefault('config', {})
-        for key in ['region_name', 'bucket', 'prefix', 'endpoint_url']:
-            if key in payload:
-                config[key] = payload[key]
-        # Never accept or persist secrets through the API.
-        for secret_key in ('aws_access_key_id', 'aws_secret_access_key', 'aws_session_token'):
-            config.pop(secret_key, None)
-        save_s3_state()
-        json_response(self, {'data': config})
+        conn = db_connect()
+        try:
+            load_s3_state(conn=conn, force=True)
+            config = S3_STATE.setdefault('config', {})
+            for key in ['region_name', 'bucket', 'prefix', 'endpoint_url']:
+                if key in payload:
+                    config[key] = payload[key]
+            for secret_key in ('aws_access_key_id', 'aws_secret_access_key', 'aws_session_token'):
+                config.pop(secret_key, None)
+            save_s3_state(conn=conn)
+            json_response(self, {'data': dict(config)})
+        finally:
+            conn.close()
 
     def handle_s3_jobs_list(self):
-        load_s3_state()
+        load_s3_state(force=True)
         config = dict(S3_STATE.get('config', {}))
         config.pop('aws_access_key_id', None)
         config.pop('aws_secret_access_key', None)
@@ -1741,10 +2137,9 @@ class Handler(SimpleHTTPRequestHandler):
             raise ValueError('Missing S3 bucket')
         conn = db_connect()
         rows = conn.execute('SELECT * FROM products WHERE dataset_id = ? ORDER BY id ASC', (dataset_id,)).fetchall()
-        conn.close()
         selected = [dict(row) for row in rows[:limit]]
         job_id = f'{dataset_id}-{int(time.time())}'
-        load_s3_state()
+        load_s3_state(conn=conn, force=True)
         config = dict(S3_STATE.get('config', {}))
         config.update({k: v for k, v in payload.items() if k in {'region_name', 'endpoint_url'}})
         if not config.get('endpoint_url'):
@@ -1755,7 +2150,7 @@ class Handler(SimpleHTTPRequestHandler):
         for secret_key in ('aws_access_key_id', 'aws_secret_access_key', 'aws_session_token'):
             config.pop(secret_key, None)
         S3_STATE['config'] = config
-        save_s3_state()
+        save_s3_state(conn=conn)
 
         def s3_client_factory():
             import boto3
@@ -1794,42 +2189,47 @@ class Handler(SimpleHTTPRequestHandler):
             return candidates
 
         def on_uploaded(row, item):
-            load_s3_state()
-            goods_id = normalize_goods_id(dataset_id, row.get('id'))
-            source_urls = [str(url).strip() for url in (item.get('source_urls') or []) if isinstance(url, str) and str(url).strip()]
-            image_pairs = []
-            for pair in item.get('image_pairs') or []:
-                if not isinstance(pair, dict):
-                    continue
-                source_url = str(pair.get('source_url') or '').strip()
-                s3_url = str(pair.get('s3_url') or '').strip()
-                if not source_url or not s3_url:
-                    continue
-                image_pairs.append({
-                    'source_url': source_url,
-                    's3_url': s3_url,
-                    'key': pair.get('key'),
-                    'status': pair.get('status'),
-                })
-            S3_STATE.setdefault('objects', {})[goods_id] = {
-                'dataset_id': dataset_id,
-                'product_id': str(row.get('id')),
-                'goods_id': goods_id,
-                'source_url': source_urls[0] if source_urls else None,
-                's3_url': image_pairs[0]['s3_url'] if image_pairs else None,
-                'bucket': bucket,
-                'key': image_pairs[0].get('key') if image_pairs else None,
-                'source_image_urls': source_urls,
-                's3_image_urls': [pair['s3_url'] for pair in image_pairs],
-                'image_pairs': image_pairs,
-                'source_image_count': len(source_urls),
-                's3_image_count': len(image_pairs),
-                'failed_image_count': int(item.get('image_failed') or 0),
-                'saved_on_s3': bool(item.get('saved_on_s3')),
-                'saved_at': time.time(),
-            }
-            save_s3_state()
+            state_conn = db_connect()
+            try:
+                load_s3_state(conn=state_conn, force=True)
+                goods_id = normalize_goods_id(dataset_id, row.get('id'))
+                source_urls = [str(url).strip() for url in (item.get('source_urls') or []) if isinstance(url, str) and str(url).strip()]
+                image_pairs = []
+                for pair in item.get('image_pairs') or []:
+                    if not isinstance(pair, dict):
+                        continue
+                    source_url = str(pair.get('source_url') or '').strip()
+                    s3_url = str(pair.get('s3_url') or '').strip()
+                    if not source_url or not s3_url:
+                        continue
+                    image_pairs.append({
+                        'source_url': source_url,
+                        's3_url': s3_url,
+                        'key': pair.get('key'),
+                        'status': pair.get('status'),
+                    })
+                S3_STATE.setdefault('objects', {})[goods_id] = {
+                    'dataset_id': dataset_id,
+                    'product_id': str(row.get('id')),
+                    'goods_id': goods_id,
+                    'source_url': source_urls[0] if source_urls else None,
+                    's3_url': image_pairs[0]['s3_url'] if image_pairs else None,
+                    'bucket': bucket,
+                    'key': image_pairs[0].get('key') if image_pairs else None,
+                    'source_image_urls': source_urls,
+                    's3_image_urls': [pair['s3_url'] for pair in image_pairs],
+                    'image_pairs': image_pairs,
+                    'source_image_count': len(source_urls),
+                    's3_image_count': len(image_pairs),
+                    'failed_image_count': int(item.get('image_failed') or 0),
+                    'saved_on_s3': bool(item.get('saved_on_s3')),
+                    'saved_at': time.time(),
+                }
+                save_s3_state(conn=state_conn)
+            finally:
+                state_conn.close()
 
+        conn.close()
         future = S3_JOB_MANAGER.start_job(
             job_id=job_id,
             dataset_id=dataset_id,
@@ -1852,7 +2252,7 @@ class Handler(SimpleHTTPRequestHandler):
         json_response(self, {'data': S3_JOB_MANAGER.get_job(job_id)}, status=HTTPStatus.ACCEPTED)
 
     def handle_s3_job_detail(self, job_id):
-        load_s3_state()
+        load_s3_state(force=True)
         job = S3_JOB_MANAGER.get_job(job_id)
         if not job:
             return error_response(self, f'Job not found: {job_id}', HTTPStatus.NOT_FOUND, code='not_found')
