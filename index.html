@@ -80,7 +80,11 @@
         <div class="field-group field-group-toggle">
           <label class="toggle">
             <input id="imagesOnlyToggle" type="checkbox" />
-            <span>Images seulement</span>
+            <span>Images source seulement</span>
+          </label>
+          <label class="toggle">
+            <input id="savedOnS3Toggle" type="checkbox" />
+            <span>Saved on S3 only</span>
           </label>
           <button id="resetFiltersBtn" class="secondary-btn" type="button">Réinitialiser</button>
         </div>
@@ -139,7 +143,7 @@
       <main class="product-stage">
         <section class="intro-note">
           <p>
-            Astuce : utilise la recherche + le filtre image pour isoler rapidement les fiches exploitables, puis ouvre le modal JSON ou la source d’origine à la demande.
+            Astuce : utilise la recherche + les filtres images source / Saved on S3 only pour isoler rapidement les fiches exploitables, puis ouvre le modal JSON ou la source d’origine à la demande.
           </p>
         </section>
         <div id="contentLoader" class="content-loader hidden" aria-live="polite" aria-busy="true">

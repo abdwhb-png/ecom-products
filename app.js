@@ -9,6 +9,7 @@ const state = {
   search: (query.get('search') || '').trim().toLowerCase(),
   category: (query.get('category') || '').trim(),
   imagesOnly: ['1', 'true', 'yes', 'on'].includes((query.get('imagesOnly') || '').toLowerCase()),
+  savedOnS3: ['1', 'true', 'yes', 'on'].includes((query.get('savedOnS3') || '').toLowerCase()),
   sort: query.get('sort') || 'relevance',
   page: Math.max(1, Number.parseInt(query.get('page') || '1', 10) || 1),
   pageSize: Math.max(1, Number.parseInt(query.get('pageSize') || '24', 10) || 24),
@@ -26,6 +27,7 @@ const els = {
   categorySelect: document.getElementById('categorySelect'),
   sortSelect: document.getElementById('sortSelect'),
   imagesOnlyToggle: document.getElementById('imagesOnlyToggle'),
+  savedOnS3Toggle: document.getElementById('savedOnS3Toggle'),
   resetFiltersBtn: document.getElementById('resetFiltersBtn'),
   pageSizeSelect: document.getElementById('pageSizeSelect'),
   prevPageBtn: document.getElementById('prevPageBtn'),
@@ -139,6 +141,15 @@ function bindEvents() {
     });
   });
 
+  els.savedOnS3Toggle.addEventListener('change', async (event) => {
+    state.savedOnS3 = event.target.checked;
+    state.page = 1;
+    await refreshUI({
+      title: 'Filtre S3…',
+      text: 'On recharge uniquement les produits enregistrés sur S3.',
+    });
+  });
+
   els.pageSizeSelect.addEventListener('change', async (event) => {
     state.pageSize = Math.max(1, Number.parseInt(event.target.value, 10) || 24);
     state.page = 1;
@@ -168,6 +179,7 @@ function bindEvents() {
     state.search = '';
     state.category = '';
     state.imagesOnly = false;
+    state.savedOnS3 = false;
     state.sort = 'relevance';
     state.page = 1;
     state.pageSize = 24;
@@ -268,6 +280,7 @@ function syncControlsFromState() {
   els.searchInput.value = state.search;
   els.sortSelect.value = state.sort;
   els.imagesOnlyToggle.checked = state.imagesOnly;
+  els.savedOnS3Toggle.checked = state.savedOnS3;
   els.pageSizeSelect.value = String(state.pageSize);
 }
 
@@ -303,6 +316,7 @@ async function fetchProducts() {
     category: state.category,
     sort: state.sort,
     imagesOnly: String(state.imagesOnly),
+    savedOnS3: String(state.savedOnS3),
     page: String(state.page),
     pageSize: String(state.pageSize),
   });
@@ -389,7 +403,8 @@ function renderActiveFilters() {
   if (activeDataset) chips.push(`Dataset: ${activeDataset.label}`);
   if (state.search) chips.push(`Recherche: ${state.search}`);
   if (state.category) chips.push(`Catégorie: ${state.category}`);
-  if (state.imagesOnly) chips.push('Images seulement');
+  if (state.imagesOnly) chips.push('Images source seulement');
+  if (state.savedOnS3) chips.push('Enregistrés sur S3 seulement');
   if (state.sort !== 'relevance') chips.push(`Tri: ${els.sortSelect.options[els.sortSelect.selectedIndex]?.text || state.sort}`);
   if (state.pageSize !== 24) chips.push(`Par page: ${state.pageSize}`);
 
