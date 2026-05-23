@@ -21,6 +21,7 @@ const els = {
   s3ConfigState: document.getElementById('s3ConfigState'),
   jobModalBackdrop: document.getElementById('s3JobModalBackdrop'),
   jobModalCloseBtn: document.getElementById('s3JobModalCloseBtn'),
+  jobModalCancelBtn: document.getElementById('s3JobModalCancelBtn'),
   jobModalTitle: document.getElementById('s3JobModalTitle'),
   jobModalStatus: document.getElementById('s3JobModalStatus'),
   jobModalSummary: document.getElementById('s3JobModalSummary'),
@@ -35,6 +36,7 @@ const els = {
 
 const state = {
   apiToken: '',
+  isCancellingJobs: false,
   datasets: [],
   s3Jobs: [],
   unlocked: false,
@@ -101,6 +103,7 @@ function bindEvents() {
   els.stopS3JobBtn.addEventListener('click', stopActiveS3Job);
   els.refreshS3JobsBtn.addEventListener('click', refreshS3Jobs);
   els.jobModalCloseBtn.addEventListener('click', closeJobModal);
+  els.jobModalCancelBtn.addEventListener('click', cancelSelectedJob);
   els.jobModalPrev.addEventListener('click', () => {
     if (state.selectedJobId && state.detailPage > 1) {
       openJobDetails(state.selectedJobId, state.detailPage - 1);
@@ -289,9 +292,26 @@ async function openJobDetails(jobId, page = 1, options = {}) {
   renderJobDetailsModal(payload.data);
 }
 
+function syncCancelButtons() {
+  const activeStatuses = ['running', 'queued', 'cancel_requested'];
+  const activeJobs = state.s3Jobs.filter((job) => activeStatuses.includes(job.status));
+  const selectedStatus = state.selectedJobDetail?.job?.status || state.s3Jobs.find((job) => job.job_id === state.selectedJobId)?.status;
+  const selectedIsActive = activeStatuses.includes(selectedStatus);
+
+  if (els.stopS3JobBtn) {
+    els.stopS3JobBtn.disabled = state.isCancellingJobs || activeJobs.length === 0;
+    els.stopS3JobBtn.textContent = state.isCancellingJobs ? 'Annulation…' : activeJobs.length > 1 ? 'Stop tous les jobs actifs' : 'Stop job actif';
+  }
+  if (els.jobModalCancelBtn) {
+    els.jobModalCancelBtn.disabled = state.isCancellingJobs || !state.selectedJobId || !selectedIsActive;
+    els.jobModalCancelBtn.textContent = state.isCancellingJobs ? 'Annulation…' : 'Annuler ce job';
+  }
+}
+
 function renderJobDetailsLoading(jobId, page) {
   els.jobModalTitle.textContent = jobId || 'Job';
   els.jobModalStatus.textContent = 'loading';
+  syncCancelButtons();
   els.jobModalSummary.innerHTML = `
     <div class="s3-job-kpi"><span>Traités</span><strong>…</strong></div>
     <div class="s3-job-kpi"><span>Réussis</span><strong>…</strong></div>
@@ -399,6 +419,7 @@ function renderJobDetailsModal(detail) {
   els.jobModalPageLabel.textContent = `Page ${detail.page || 1} / ${totalPages}`;
   els.jobModalPrev.disabled = (detail.page || 1) <= 1;
   els.jobModalNext.disabled = (detail.page || 1) >= totalPages;
+  syncCancelButtons();
 
   if (!items.length) {
     els.jobModalItems.innerHTML = '<div class="s3-job-empty-details">Aucun élément sur cette page.</div>';
@@ -537,11 +558,42 @@ async function startS3Job() {
   await refreshS3Jobs();
 }
 
+async function cancelJob(jobId) {
+  if (!jobId) return;
+  await fetch(`/api/s3/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST', credentials: 'include', headers: getApiHeaders() });
+}
+
+async function cancelSelectedJob() {
+  if (!state.selectedJobId || state.isCancellingJobs) return;
+  state.isCancellingJobs = true;
+  syncCancelButtons();
+  try {
+    await cancelJob(state.selectedJobId);
+    await refreshS3Jobs();
+    if (state.selectedJobId) {
+      await openJobDetails(state.selectedJobId, state.detailPage, { quiet: true });
+    }
+  } finally {
+    state.isCancellingJobs = false;
+    syncCancelButtons();
+  }
+}
+
 async function stopActiveS3Job() {
-  const active = state.s3Jobs.find((job) => ['running', 'queued', 'cancel_requested'].includes(job.status));
-  if (!active) return;
-  await fetch(`/api/s3/jobs/${encodeURIComponent(active.job_id)}/cancel`, { method: 'POST', credentials: 'include', headers: getApiHeaders() });
-  await refreshS3Jobs();
+  const activeJobs = state.s3Jobs.filter((job) => ['running', 'queued', 'cancel_requested'].includes(job.status));
+  if (!activeJobs.length || state.isCancellingJobs) return;
+  state.isCancellingJobs = true;
+  syncCancelButtons();
+  try {
+    await Promise.all(activeJobs.map((job) => cancelJob(job.job_id)));
+    await refreshS3Jobs();
+    if (state.selectedJobId) {
+      await openJobDetails(state.selectedJobId, state.detailPage, { quiet: true });
+    }
+  } finally {
+    state.isCancellingJobs = false;
+    syncCancelButtons();
+  }
 }
 
 window.addEventListener('beforeunload', () => {
