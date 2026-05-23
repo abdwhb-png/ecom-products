@@ -13,7 +13,7 @@ Small HTML/CSS/JS dashboard for browsing fast-fashion product datasets through a
 - multi-image carousel when multiple product images exist
 - local JSON API served by `server.py`
 - external-consumer friendly read API for categories and products
-- OpenAPI spec at `/api/openapi.json`
+- OpenAPI spec at `/openapi.json` (with backward-compatible alias `/api/openapi.json`)
 
 ## Project files
 
@@ -93,14 +93,18 @@ If `FAST_FASHION_API_TOKEN` is empty, the API stays open for local/dev usage.
 Important access behavior:
 
 - `/` (the HTML dashboard) is public unless you separately protect it at the reverse proxy level
-- `/api/*` requires `Authorization: Bearer <token>` when `FAST_FASHION_API_TOKEN` is set
+- `/api/*` requires `Authorization: Bearer <token>` when `FAST_FASHION_API_TOKEN` is set, except the backward-compatible OpenAPI alias `/api/openapi.json`
+- `/openapi.json` is intentionally public for client tooling and integration
 - `/healthz` is intentionally public so Dokploy / reverse proxies can health-check the service without the API token
 - on the first protected dashboard load, the browser asks for the token and then reuses it from localStorage
 
 ## API
 
+### `GET /openapi.json`
+Returns the public OpenAPI document.
+
 ### `GET /api/openapi.json`
-Returns the OpenAPI document.
+Backward-compatible alias to the same OpenAPI document.
 
 ### `GET /api/datasets`
 Returns dataset metadata.

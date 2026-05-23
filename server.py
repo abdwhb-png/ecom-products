@@ -83,7 +83,7 @@ OPENAPI_SPEC = {
     'openapi': '3.1.0',
     'info': {
         'title': 'Fast Fashion Dashboard API',
-        'version': '1.0.2',
+        'version': '1.0.3',
         'description': 'Read-only API for categories/products plus background S3 jobs.',
     },
     'servers': [{'url': '/'}],
@@ -97,18 +97,87 @@ OPENAPI_SPEC = {
             }
         }
     },
-    'security': [{'bearerAuth': []}],
     'paths': {
-        '/healthz': {'get': {'summary': 'Deployment health endpoint'}},
-        '/api/openapi.json': {'get': {'summary': 'OpenAPI document'}},
-        '/api/categories': {'get': {'summary': 'List categories'}},
-        '/api/categories/{slug}': {'get': {'summary': 'Get category'}},
-        '/api/products': {'get': {'summary': 'List products'}},
-        '/api/products/{goods_id}': {'get': {'summary': 'Get product'}},
-        '/api/s3/jobs': {'get': {'summary': 'List jobs'}, 'post': {'summary': 'Create job'}},
-        '/api/s3/jobs/{job_id}': {'get': {'summary': 'Get job detail'}},
-        '/api/s3/jobs/{job_id}/cancel': {'post': {'summary': 'Cancel job'}},
-        '/api/s3/config': {'get': {'summary': 'Get S3 config'}, 'post': {'summary': 'Update S3 config'}},
+        '/healthz': {
+            'get': {
+                'summary': 'Deployment health endpoint',
+                'description': 'Public readiness endpoint for Dokploy and reverse-proxy health checks.',
+                'responses': {
+                    '200': {'description': 'Service is ready'},
+                    '503': {'description': 'Service is not ready yet'},
+                },
+            }
+        },
+        '/openapi.json': {
+            'get': {
+                'summary': 'OpenAPI document',
+                'description': 'Public OpenAPI document for client integration and tooling.',
+                'responses': {'200': {'description': 'OpenAPI document'}},
+            }
+        },
+        '/api/openapi.json': {
+            'get': {
+                'summary': 'OpenAPI document alias',
+                'description': 'Backward-compatible alias of /openapi.json.',
+                'responses': {'200': {'description': 'OpenAPI document'}},
+            }
+        },
+        '/api/categories': {
+            'get': {
+                'summary': 'List categories',
+                'security': [{'bearerAuth': []}],
+            }
+        },
+        '/api/categories/{slug}': {
+            'get': {
+                'summary': 'Get category',
+                'security': [{'bearerAuth': []}],
+            }
+        },
+        '/api/products': {
+            'get': {
+                'summary': 'List products',
+                'security': [{'bearerAuth': []}],
+            }
+        },
+        '/api/products/{goods_id}': {
+            'get': {
+                'summary': 'Get product',
+                'security': [{'bearerAuth': []}],
+            }
+        },
+        '/api/s3/jobs': {
+            'get': {
+                'summary': 'List jobs',
+                'security': [{'bearerAuth': []}],
+            },
+            'post': {
+                'summary': 'Create job',
+                'security': [{'bearerAuth': []}],
+            }
+        },
+        '/api/s3/jobs/{job_id}': {
+            'get': {
+                'summary': 'Get job detail',
+                'security': [{'bearerAuth': []}],
+            }
+        },
+        '/api/s3/jobs/{job_id}/cancel': {
+            'post': {
+                'summary': 'Cancel job',
+                'security': [{'bearerAuth': []}],
+            }
+        },
+        '/api/s3/config': {
+            'get': {
+                'summary': 'Get S3 config',
+                'security': [{'bearerAuth': []}],
+            },
+            'post': {
+                'summary': 'Update S3 config',
+                'security': [{'bearerAuth': []}],
+            }
+        },
     },
 }
 
@@ -425,6 +494,8 @@ class Handler(SimpleHTTPRequestHandler):
             if parsed.path == '/healthz':
                 status = health_status()
                 return json_response(self, {'data': status}, status=HTTPStatus.OK if status.get('ok') else HTTPStatus.SERVICE_UNAVAILABLE)
+            if parsed.path in {'/openapi.json', '/api/openapi.json'}:
+                return json_response(self, OPENAPI_SPEC)
             if parsed.path.startswith('/api/') and not api_token_is_valid(self):
                 return api_unauthorized_response(self)
             if parsed.path == '/docs':
@@ -433,8 +504,6 @@ class Handler(SimpleHTTPRequestHandler):
             if parsed.path == '/s3':
                 content = S3_PAGE_PATH.read_bytes()
                 return html_response(self, content)
-            if parsed.path == '/api/openapi.json':
-                return json_response(self, OPENAPI_SPEC)
             if parsed.path == '/api/s3/auth-check':
                 return json_response(self, {'data': {'authenticated': auth_required(self)}})
             if parsed.path == '/api/s3/config' and not auth_required(self):
@@ -445,8 +514,6 @@ class Handler(SimpleHTTPRequestHandler):
                 return error_response(self, 'Authentication required', HTTPStatus.UNAUTHORIZED, code='unauthorized')
             if parsed.path == '/api/s3/auth':
                 return self.handle_s3_auth()
-            if parsed.path == '/api/openapi.json':
-                return json_response(self, OPENAPI_SPEC)
             if parsed.path == '/api/datasets':
                 return self.handle_datasets(parsed.query)
             if parsed.path == '/api/categories':

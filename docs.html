@@ -208,7 +208,7 @@
         <section class="card">
           <h2>Base URLs</h2>
           <table class="table">
-            <tr><th>OpenAPI</th><td><code class="inline">/api/openapi.json</code></td></tr>
+            <tr><th>OpenAPI</th><td><code class="inline">/openapi.json</code></td></tr>
             <tr><th>Health</th><td><code class="inline">/healthz</code></td></tr>
             <tr><th>Catégories</th><td><code class="inline">/api/categories</code></td></tr>
             <tr><th>Produit</th><td><code class="inline">/api/products/{goods_id}</code></td></tr>
@@ -235,6 +235,21 @@
     "db_exists": true,
     "has_datasets_table": true,
     "datasets_count": 2
+  }
+}</pre>
+          </article>
+
+          <article class="card" style="background: var(--panel-2);">
+            <div class="endpoint"><span class="method get">GET</span><span class="path">/openapi.json</span></div>
+            <p class="muted small">Document OpenAPI public pour l’intégration client, les SDK generators, Swagger-compatible tooling et la découverte de l’API.</p>
+            <pre>{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Fast Fashion Dashboard API"
+  },
+  "paths": {
+    "/healthz": {"get": {...}},
+    "/api/products": {"get": {...}}
   }
 }</pre>
           </article>
@@ -332,7 +347,7 @@
             <li>Quand <code class="inline">FAST_FASHION_API_TOKEN</code> est défini, tous les endpoints <code class="inline">/api/*</code> exigent le header Bearer.</li>
             <li>Le HTML du dashboard et <code class="inline">/healthz</code> ne sont pas protégés par ce token API.</li>
           </ul>
-          <p class="muted small">Tu peux aussi lire la spec brute via <code class="inline">/api/openapi.json</code>.</p>
+          <p class="muted small">Tu peux aussi lire la spec brute via <code class="inline">/openapi.json</code> (ou l’alias <code class="inline">/api/openapi.json</code>).</p>
         </section>
       </div>
     </div>
