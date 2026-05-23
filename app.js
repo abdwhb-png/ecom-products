@@ -336,7 +336,7 @@ async function fetchCategories() {
   const params = new URLSearchParams({
     dataset: state.currentDataset,
     page: '1',
-    pageSize: '200',
+    pageSize: '5000',
   });
   const response = await fetch(`/api/categories?${params.toString()}`, { headers: getApiHeaders() });
   if (response.status === 401) {
@@ -357,7 +357,8 @@ function render(payload, categories = []) {
 
   els.activeDatasetLabel.textContent = dataset?.label || '—';
   els.resultsCount.textContent = new Intl.NumberFormat('fr-FR').format(pagination.total || 0);
-  els.categoryCount.textContent = new Intl.NumberFormat('fr-FR').format(categories.length);
+  const totalCategories = categories.length;
+  els.categoryCount.textContent = new Intl.NumberFormat('fr-FR').format(totalCategories);
 
   renderCategorySelect(categories);
   renderSummary(dataset, categories, pagination);

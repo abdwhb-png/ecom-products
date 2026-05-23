@@ -44,7 +44,7 @@ const state = {
   selectedJobId: null,
   selectedJobDetail: null,
   detailPage: 1,
-  detailPageSize: 6,
+  detailPageSize: 50,
   serverConfig: {
     bucket: '',
     prefix: '',

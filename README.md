@@ -135,6 +135,10 @@ Query params:
 - `sort`
 - `imagesOnly` — only products that have at least one source image in the imported catalog
 - `savedOnS3` — only products whose runtime S3 state is marked as saved in SQLite
+
+Dashboard notes:
+- the category stat on the homepage reflects the total number of available categories loaded from `/api/categories`, not only the first UI page of category options
+- the S3 job detail modal paginates processed items 50 per page and uses a fixed top-right close icon
 - `page`
 - `pageSize`
 - `format` (`legacy` or `resource`)

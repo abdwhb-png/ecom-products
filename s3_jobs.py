@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
+import socket
 
 try:
     import boto3
@@ -309,8 +310,10 @@ class S3JobManager:
         parsed = urlparse(url)
         referer = f'{parsed.scheme}://{parsed.netloc}/' if parsed.scheme and parsed.netloc else None
         hostname = (parsed.hostname or '').lower()
+        timeout_plan = (20, 35, 50)
         if hostname.endswith('asos-media.com'):
             referer = 'https://www.asos.com/'
+            timeout_plan = (25, 45, 60)
         elif hostname.endswith('ltwebstatic.com'):
             referer = 'https://us.shein.com/'
 
@@ -330,12 +333,22 @@ class S3JobManager:
 
         req = Request(url, headers=headers)
         last_error = None
-        for timeout_seconds in (15, 20):
+        for timeout_seconds in timeout_plan:
             try:
                 with urlopen(req, timeout=timeout_seconds) as resp:
-                    data = resp.read()
+                    chunks = []
+                    while True:
+                        chunk = resp.read(1024 * 256)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                    data = b''.join(chunks)
                     content_type = resp.headers.get_content_type()
+                if not data:
+                    raise RuntimeError('Empty content')
                 return data, content_type
+            except (TimeoutError, socket.timeout) as exc:
+                last_error = exc
             except Exception as exc:
                 last_error = exc
         raise last_error or RuntimeError('Download failed')

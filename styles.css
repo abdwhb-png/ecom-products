@@ -1352,10 +1352,37 @@ button:focus {
 }
 
 .s3-job-modal-head {
+  position: relative;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+  padding-right: 56px;
+}
+
+.icon-close-btn {
+  position: absolute;
+  top: 0;
+  right: 0;
+  inline-size: 40px;
+  block-size: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(15, 23, 42, 0.88);
+  color: var(--text);
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.icon-close-btn:hover {
+  transform: translateY(-1px);
+  border-color: rgba(253, 186, 116, 0.42);
+  background: rgba(30, 41, 59, 0.96);
 }
 
 .s3-job-kpis {
