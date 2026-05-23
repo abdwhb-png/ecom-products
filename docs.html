@@ -229,7 +229,7 @@
             <tr><th>Datasets</th><td><code class="inline">/api/datasets</code></td></tr>
             <tr><th>Catégories</th><td><code class="inline">/api/categories</code></td></tr>
             <tr><th>Produits</th><td><code class="inline">/api/products</code></td></tr>
-            <tr><th>Version spec</th><td><code class="inline">1.1.0</code></td></tr>
+            <tr><th>Version spec</th><td><code class="inline">1.2.0</code></td></tr>
           </table>
         </section>
       </div>
@@ -314,19 +314,20 @@
 
           <article class="card" style="background: var(--panel-2);">
             <div class="endpoint"><span class="method get">GET</span><span class="path">/api/products</span></div>
-            <p class="muted small">Liste paginée des produits. Peut retourner soit le payload legacy dashboard, soit le payload resource stable.</p>
+            <p class="muted small">Liste paginée des produits uniquement. Les catégories sont désormais récupérées séparément via <code class="inline">/api/categories</code>.</p>
             <div class="param-list">
               <div class="param-item"><strong>dataset</strong><span>query — <code class="inline">shein</code> ou <code class="inline">asos</code></span></div>
               <div class="param-item"><strong>search</strong><span>query — recherche plein texte</span></div>
               <div class="param-item"><strong>category</strong><span>query — filtre catégorie</span></div>
               <div class="param-item"><strong>sort</strong><span>query — <code class="inline">relevance</code>, <code class="inline">price-asc</code>, <code class="inline">price-desc</code>, <code class="inline">rating-desc</code>, <code class="inline">reviews-desc</code>, <code class="inline">name-asc</code></span></div>
-              <div class="param-item"><strong>imagesOnly</strong><span>query — booléen</span></div>
+              <div class="param-item"><strong>imagesOnly</strong><span>query — seulement les produits ayant au moins une image source dans le catalogue importé</span></div>
+              <div class="param-item"><strong>savedOnS3</strong><span>query — seulement les produits marqués comme enregistrés sur S3 dans l’état runtime SQLite</span></div>
               <div class="param-item"><strong>page</strong> <span>query — pagination</span></div>
               <div class="param-item"><strong>pageSize</strong><span>query — max 200</span></div>
               <div class="param-item"><strong>format</strong><span>query — <code class="inline">legacy</code> ou <code class="inline">resource</code></span></div>
             </div>
             <div class="response-list">
-              <div class="response-item"><strong>200</strong><span>Schéma: <code class="inline">ProductsLegacyResponse</code> ou <code class="inline">ProductsResourceResponse</code></span></div>
+              <div class="response-item"><strong>200</strong><span>Schéma: <code class="inline">ProductsLegacyResponse</code> ou <code class="inline">ProductsResourceResponse</code> (sans catégories embarquées)</span></div>
               <div class="response-item"><strong>400 / 401</strong><span>Schéma: <code class="inline">ErrorResponse</code></span></div>
             </div>
           </article>
