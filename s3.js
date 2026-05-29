@@ -153,6 +153,12 @@ function getApiHeaders(extraHeaders = {}) {
   return headers;
 }
 
+
+function isExpectedS3AuthError(error) {
+  const message = String(error?.message || '');
+  return Boolean(error?.expectedAuth || message.includes('Token API requis ou invalide') || message.includes('S3 admin authentication required'));
+}
+
 function setS3Busy(isBusy, { button = null, loadingText = 'Chargement…' } = {}) {
   state.isSubmitting = isBusy;
   document.body.classList.toggle('is-busy', isBusy);
@@ -239,7 +245,9 @@ async function unlockPage() {
 async function loadDatasets() {
   const response = await fetch('/api/datasets', { headers: getApiHeaders() });
   if (!response.ok) {
-    throw new Error(response.status === 401 ? 'Token API requis ou invalide' : 'Impossible de charger les datasets');
+    const error = new Error(response.status === 401 ? 'Token API requis ou invalide' : 'Impossible de charger les datasets');
+    if (response.status === 401) error.expectedAuth = true;
+    throw error;
   }
   const payload = await response.json();
   state.datasets = (payload.datasets || []).filter((dataset) => ['shein', 'asos'].includes(dataset.id));
@@ -746,7 +754,12 @@ window.addEventListener('beforeunload', () => {
 });
 
 init().catch((error) => {
-  console.error(error);
-  els.authStateLabel.textContent = 'Erreur';
-  els.authHint.textContent = error.message;
+  if (!isExpectedS3AuthError(error)) {
+    console.error(error);
+    els.authStateLabel.textContent = 'Erreur';
+    els.authHint.textContent = error.message;
+  } else {
+    els.authStateLabel.textContent = 'API verrouillée';
+    els.authHint.textContent = 'Renseigne d’abord le token API du dashboard, puis le mot de passe admin S3.';
+  }
 });

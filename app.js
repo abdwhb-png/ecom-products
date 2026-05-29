@@ -219,6 +219,11 @@ function getApiHeaders(extraHeaders = {}) {
   return headers;
 }
 
+function isExpectedAuthError(error) {
+  const message = String(error?.message || '');
+  return Boolean(error?.expectedAuth || message.includes('Autorisation requise') || message.includes('Token API requis ou invalide'));
+}
+
 function setApiLocked(message = 'Token requis pour accéder à l’API.') {
   state.apiUnlocked = false;
   els.authGate?.classList.remove('hidden');
@@ -281,7 +286,9 @@ async function loadDatasets() {
     const response = await fetch('/api/datasets', { headers: getApiHeaders() });
     if (response.status === 401) {
       setApiLocked('Token invalide ou manquant.');
-      throw new Error('Autorisation requise');
+      const error = new Error('Autorisation requise');
+      error.expectedAuth = true;
+      throw error;
     }
     if (!response.ok) throw new Error(`Impossible de charger les datasets (${response.status})`);
     const payload = await response.json();
@@ -331,8 +338,12 @@ async function refreshUI(options = {}) {
     render(payload, state.currentCategories, state.currentCategoryPagination);
     updateStatus('Catalogue chargé localement.', 'success');
   } catch (error) {
-    console.error(error);
-    updateStatus(`Erreur: ${error.message}`, 'error');
+    if (!isExpectedAuthError(error)) {
+      console.error(error);
+      updateStatus(`Erreur: ${error.message}`, 'error');
+    } else {
+      updateStatus('API verrouillée. Entre ton token pour charger le catalogue.', 'info');
+    }
   } finally {
     els.datasetLoader.classList.add('hidden');
     setContentLoading(false);
@@ -355,7 +366,9 @@ async function fetchProducts() {
   const response = await fetch(`/api/products?${params.toString()}`, { headers: getApiHeaders() });
   if (response.status === 401) {
     setApiLocked('Token invalide ou manquant.');
-    throw new Error('Autorisation requise');
+    const error = new Error('Autorisation requise');
+    error.expectedAuth = true;
+    throw error;
   }
   if (!response.ok) throw new Error(`Impossible de charger les produits (${response.status})`);
   const payload = await response.json();
@@ -373,7 +386,9 @@ async function fetchCategories() {
   const response = await fetch(`/api/categories?${params.toString()}`, { headers: getApiHeaders() });
   if (response.status === 401) {
     setApiLocked('Token invalide ou manquant.');
-    throw new Error('Autorisation requise');
+    const error = new Error('Autorisation requise');
+    error.expectedAuth = true;
+    throw error;
   }
   if (!response.ok) throw new Error(`Impossible de charger les catégories (${response.status})`);
   return response.json();
@@ -866,6 +881,10 @@ function debounce(fn, delay = 200) {
 }
 
 init().catch((error) => {
-  console.error(error);
-  updateStatus(`Erreur: ${error.message}`, 'error');
+  if (!isExpectedAuthError(error)) {
+    console.error(error);
+    updateStatus(`Erreur: ${error.message}`, 'error');
+  } else {
+    updateStatus('API verrouillée. Entre ton token pour charger le catalogue.', 'info');
+  }
 });
