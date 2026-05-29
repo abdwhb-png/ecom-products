@@ -138,8 +138,12 @@ Query params:
 
 S3 / AWS notes:
 - `AWS_ENDPOINT_URL` = endpoint API S3-compatible used by the uploader backend (for example R2 S3 API endpoint)
+- `AWS_BUCKET` = bucket name used by S3 upload jobs
+- `AWS_PREFIX` = optional object-key prefix prepended to uploaded images and shown in the S3 admin UI
 - `AWS_URL` = public base URL returned by the app and used by the migration script/UI to rewrite stored `s3://...` values into public URLs
+- `AWS_REGION` / `AWS_DEFAULT_REGION` = optional region hint; R2 resolves to `auto` when `AWS_ENDPOINT_URL` points at `*.r2.cloudflarestorage.com`
 - `FAST_FASHION_S3_ADMIN_PASSWORD` = admin password for the protected S3 area (upload jobs, migration jobs, S3 config UI/API)
+- S3/R2 config is environment-authoritative: the admin UI reads effective values from env and no longer persists bucket/prefix/endpoint/public URL overrides in SQLite
 - the S3 admin page now exposes a migration section that launches the existing `scripts/migrate_aws_public_urls.py` logic in a background admin job
 - migration preview mode shows a sample without writing; full migration creates a JSON backup of `s3_objects` before updating stored URLs
 

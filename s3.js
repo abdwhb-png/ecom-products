@@ -57,10 +57,10 @@ const state = {
   serverConfig: {
     bucket: '',
     prefix: '',
-  },
-  formDraft: {
-    bucket: false,
-    prefix: false,
+    endpoint_url: '',
+    public_url: '',
+    region_name: '',
+    config_source: 'env',
   },
 };
 
@@ -108,12 +108,6 @@ function bindEvents() {
   els.s3AuthForm?.addEventListener('submit', async (event) => {
     event.preventDefault();
     await unlockPage();
-  });
-  els.s3BucketInput.addEventListener('input', () => {
-    state.formDraft.bucket = els.s3BucketInput.value.trim() !== (state.serverConfig.bucket || '');
-  });
-  els.s3PrefixInput.addEventListener('input', () => {
-    state.formDraft.prefix = els.s3PrefixInput.value.trim() !== (state.serverConfig.prefix || '');
   });
   els.startS3JobBtn.addEventListener('click', startS3Job);
   els.stopS3JobBtn.addEventListener('click', stopActiveS3Job);
@@ -281,21 +275,19 @@ async function refreshS3Jobs() {
   const nextConfig = {
     bucket: payload.config?.bucket || '',
     prefix: payload.config?.prefix || '',
+    endpoint_url: payload.config?.endpoint_url || '',
+    public_url: payload.config?.public_url || '',
+    region_name: payload.config?.region_name || '',
+    config_source: payload.config?.config_source || 'env',
   };
   state.serverConfig = nextConfig;
-  if (state.formDraft.bucket) {
-    state.formDraft.bucket = els.s3BucketInput.value.trim() !== nextConfig.bucket;
-  } else {
-    els.s3BucketInput.value = nextConfig.bucket;
-  }
-  if (state.formDraft.prefix) {
-    state.formDraft.prefix = els.s3PrefixInput.value.trim() !== nextConfig.prefix;
-  } else {
-    els.s3PrefixInput.value = nextConfig.prefix;
-  }
+  els.s3BucketInput.value = nextConfig.bucket;
+  els.s3PrefixInput.value = nextConfig.prefix;
   els.activeJobsCount.textContent = String(active.length);
   els.s3ConfigState.textContent = nextConfig.bucket || '—';
-  els.s3ConfigHint.textContent = nextConfig.bucket ? `Bucket configuré: ${nextConfig.bucket}` : 'Configure ton bucket ici, puis lance un job.';
+  els.s3ConfigHint.textContent = nextConfig.bucket
+    ? `Config env active · bucket=${nextConfig.bucket}${nextConfig.prefix ? ` · prefix=${nextConfig.prefix}` : ''}${nextConfig.region_name ? ` · region=${nextConfig.region_name}` : ''}`
+    : 'AWS_BUCKET est manquant dans l’environnement du serveur.';
   if (els.migrationHint) {
     const latestMigration = state.s3Jobs.find((job) => String(job.kind || '').startsWith('migration'));
     if (latestMigration) {
@@ -627,8 +619,6 @@ async function startS3Job() {
   try {
     const body = {
       dataset_id: els.s3DatasetSelect.value,
-      bucket: els.s3BucketInput.value.trim(),
-      prefix: els.s3PrefixInput.value.trim(),
       limit: Number.parseInt(els.s3LimitInput.value, 10) || 50,
       concurrency: Number.parseInt(els.s3ConcurrencyInput.value, 10) || 4,
     };

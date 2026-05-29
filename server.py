@@ -98,6 +98,25 @@ def resolve_s3_region(endpoint_url: str | None = None, explicit_region: str | No
     return 'us-east-1' if endpoint else None
 
 
+def effective_s3_config() -> dict:
+    endpoint_url = resolve_aws_endpoint_url()
+    return {
+        'region_name': resolve_s3_region(endpoint_url, None),
+        'bucket': resolve_aws_bucket() or None,
+        'prefix': resolve_aws_prefix() or '',
+        'endpoint_url': endpoint_url or None,
+        'public_url': resolve_aws_public_url() or None,
+        'config_source': 'env',
+        'config_source_map': {
+            'region_name': 'env',
+            'bucket': 'env',
+            'prefix': 'env',
+            'endpoint_url': 'env',
+            'public_url': 'env',
+        },
+    }
+
+
 def s3_to_public_url(s3_url: str | None, endpoint_url: str | None = None, region: str | None = None) -> str | None:
     """Convert an s3://bucket/key URL to a public HTTPS URL.
 
@@ -515,10 +534,17 @@ OPENAPI_SPEC = {
             'S3Config': {
                 'type': 'object',
                 'properties': {
-                    'region_name': {'type': ['string', 'null']},
-                    'bucket': {'type': ['string', 'null']},
-                    'prefix': {'type': ['string', 'null']},
-                    'endpoint_url': {'type': ['string', 'null']},
+                    'region_name': {'type': ['string', 'null'], 'readOnly': True},
+                    'bucket': {'type': ['string', 'null'], 'readOnly': True},
+                    'prefix': {'type': ['string', 'null'], 'readOnly': True},
+                    'endpoint_url': {'type': ['string', 'null'], 'readOnly': True},
+                    'public_url': {'type': ['string', 'null'], 'readOnly': True},
+                    'config_source': {'type': 'string', 'enum': ['env'], 'readOnly': True},
+                    'config_source_map': {
+                        'type': 'object',
+                        'readOnly': True,
+                        'additionalProperties': {'type': 'string'},
+                    },
                 },
             },
             'S3ConfigResponse': {
@@ -915,37 +941,14 @@ OPENAPI_SPEC = {
             'get': {
                 'tags': ['s3'],
                 'operationId': 'getS3Config',
-                'summary': 'Get S3 config',
-                'description': 'Returns the non-secret S3 configuration visible to the UI.',
+                'summary': 'Get effective S3 config',
+                'description': 'Returns the non-secret effective S3 configuration resolved from environment variables.',
                 'security': [{'bearerAuth': []}],
                 'responses': {
                     '200': {
                         'description': 'S3 config.',
                         'content': {'application/json': {'schema': {'$ref': '#/components/schemas/S3ConfigResponse'}}},
                     },
-                    '401': {'$ref': '#/components/responses/Unauthorized'},
-                },
-            },
-            'post': {
-                'tags': ['s3'],
-                'operationId': 'updateS3Config',
-                'summary': 'Update S3 config',
-                'description': 'Updates the non-secret S3 configuration persisted on disk.',
-                'security': [{'bearerAuth': []}],
-                'requestBody': {
-                    'required': True,
-                    'content': {
-                        'application/json': {
-                            'schema': {'$ref': '#/components/schemas/S3Config'},
-                        }
-                    },
-                },
-                'responses': {
-                    '200': {
-                        'description': 'Updated S3 config.',
-                        'content': {'application/json': {'schema': {'$ref': '#/components/schemas/S3ConfigResponse'}}},
-                    },
-                    '400': {'$ref': '#/components/responses/BadRequest'},
                     '401': {'$ref': '#/components/responses/Unauthorized'},
                 },
             },
@@ -1081,6 +1084,8 @@ def _sanitize_s3_config(config: dict | None) -> dict:
     cleaned = dict(config or {})
     for secret_key in ('aws_access_key_id', 'aws_secret_access_key', 'aws_session_token'):
         cleaned.pop(secret_key, None)
+    for managed_key in ('region_name', 'bucket', 'prefix', 'endpoint_url', 'public_url', 'config_source', 'config_source_map'):
+        cleaned.pop(managed_key, None)
     return cleaned
 
 
@@ -1923,12 +1928,6 @@ class Handler(SimpleHTTPRequestHandler):
                     return s3_admin_required_response(self)
                 job_id = parsed.path.split('/api/s3/jobs/', 1)[1].rsplit('/cancel', 1)[0].strip('/')
                 return self.handle_s3_job_cancel(job_id)
-            if parsed.path == '/api/s3/config':
-                if not api_token_is_valid(self):
-                    return api_unauthorized_response(self)
-                if not s3_access_is_valid(self):
-                    return s3_admin_required_response(self)
-                return self.handle_s3_config_update()
             if parsed.path.startswith('/api/') and not api_token_is_valid(self):
                 return api_unauthorized_response(self)
             return error_response(self, 'Not found', HTTPStatus.NOT_FOUND, code='not_found')
@@ -2340,50 +2339,11 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def handle_s3_config_get(self):
-        load_s3_state(force=True)
-        config = dict(S3_STATE.get('config', {}))
-        config.pop('aws_access_key_id', None)
-        config.pop('aws_secret_access_key', None)
-        config.pop('aws_session_token', None)
-        if not config.get('bucket'):
-            config['bucket'] = resolve_aws_bucket()
-        if not config.get('endpoint_url'):
-            config['endpoint_url'] = resolve_aws_endpoint_url()
-        if not config.get('public_url'):
-            config['public_url'] = resolve_aws_public_url()
-        config['region_name'] = resolve_s3_region(config.get('endpoint_url'), config.get('region_name'))
-        json_response(self, {'data': config})
-
-    def handle_s3_config_update(self):
-        payload = self._read_json_body()
-        conn = db_connect()
-        try:
-            load_s3_state(conn=conn, force=True)
-            config = S3_STATE.setdefault('config', {})
-            for key in ['region_name', 'bucket', 'prefix', 'endpoint_url', 'public_url']:
-                if key in payload:
-                    config[key] = payload[key]
-            for secret_key in ('aws_access_key_id', 'aws_secret_access_key', 'aws_session_token'):
-                config.pop(secret_key, None)
-            save_s3_state(conn=conn)
-            json_response(self, {'data': dict(config)})
-        finally:
-            conn.close()
+        json_response(self, {'data': effective_s3_config()})
 
     def handle_s3_jobs_list(self):
         load_s3_state(force=True)
-        config = dict(S3_STATE.get('config', {}))
-        config.pop('aws_access_key_id', None)
-        config.pop('aws_secret_access_key', None)
-        config.pop('aws_session_token', None)
-        if not config.get('bucket'):
-            config['bucket'] = resolve_aws_bucket()
-        if not config.get('endpoint_url'):
-            config['endpoint_url'] = resolve_aws_endpoint_url()
-        if not config.get('public_url'):
-            config['public_url'] = resolve_aws_public_url()
-        config['region_name'] = resolve_s3_region(config.get('endpoint_url'), config.get('region_name'))
-        json_response(self, {'data': S3_JOB_MANAGER.list_jobs(), 'config': config})
+        json_response(self, {'data': S3_JOB_MANAGER.list_jobs(), 'config': effective_s3_config()})
 
     def handle_s3_jobs_create(self):
         payload = self._read_json_body()
@@ -2393,30 +2353,17 @@ class Handler(SimpleHTTPRequestHandler):
         concurrency = parse_positive_int(payload.get('concurrency', 4), 4, maximum=24)
         if dataset_id == 'asos':
             concurrency = min(concurrency, 2)
-        bucket = (payload.get('bucket') or S3_STATE.get('config', {}).get('bucket') or resolve_aws_bucket() or '').strip()
-        prefix = (payload.get('prefix') or S3_STATE.get('config', {}).get('prefix') or resolve_aws_prefix() or '').strip()
+        config = effective_s3_config()
+        bucket = str(config.get('bucket') or '').strip()
+        prefix = str(config.get('prefix') or '').strip()
         if dataset_id not in ALLOWED_DATASETS:
             raise ValueError(f'Unknown dataset: {dataset_id}')
         if not bucket:
-            raise ValueError('Missing S3 bucket')
+            raise ValueError('Missing AWS_BUCKET')
         conn = db_connect()
         rows = conn.execute('SELECT * FROM products WHERE dataset_id = ? ORDER BY id ASC', (dataset_id,)).fetchall()
         selected = [dict(row) for row in rows[:limit]]
         job_id = f'{dataset_id}-{int(time.time())}'
-        load_s3_state(conn=conn, force=True)
-        config = dict(S3_STATE.get('config', {}))
-        config.update({k: v for k, v in payload.items() if k in {'region_name', 'endpoint_url', 'public_url'}})
-        if not config.get('endpoint_url'):
-            config['endpoint_url'] = resolve_aws_endpoint_url()
-        if not config.get('public_url'):
-            config['public_url'] = resolve_aws_public_url()
-        config['region_name'] = resolve_s3_region(config.get('endpoint_url'), config.get('region_name'))
-        config['bucket'] = bucket
-        config['prefix'] = prefix
-        for secret_key in ('aws_access_key_id', 'aws_secret_access_key', 'aws_session_token'):
-            config.pop(secret_key, None)
-        S3_STATE['config'] = config
-        save_s3_state(conn=conn)
 
         def s3_client_factory():
             import boto3
@@ -2435,9 +2382,9 @@ class Handler(SimpleHTTPRequestHandler):
                 region_name=resolve_s3_region(endpoint_url, config.get('region_name')),
             )
             client_kwargs = {
-                'endpoint_url': config.get('endpoint_url') or None,
+                'endpoint_url': endpoint_url,
             }
-            if config.get('endpoint_url'):
+            if endpoint_url:
                 client_kwargs['config'] = Config(s3={'addressing_style': 'path'})
             return session.client('s3', **client_kwargs)
 
@@ -2461,8 +2408,8 @@ class Handler(SimpleHTTPRequestHandler):
                 goods_id = normalize_goods_id(dataset_id, row.get('id'))
                 source_urls = [str(url).strip() for url in (item.get('source_urls') or []) if isinstance(url, str) and str(url).strip()]
                 image_pairs = []
-                # convert s3:// URLs to public URLs according to current config
-                cfg = S3_STATE.get('config', {}) or {}
+                # convert s3:// URLs to public URLs according to current env-driven config
+                cfg = effective_s3_config()
                 ep = cfg.get('endpoint_url')
                 rg = cfg.get('region_name')
                 for pair in item.get('image_pairs') or []:

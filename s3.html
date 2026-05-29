@@ -15,7 +15,7 @@
           <h1>Fast Fashion S3 Control</h1>
           <p class="hero-copy">
             Upload manuel, suivi d’avancement, arrêt d’un job et paramétrage des lots à traiter.
-            La configuration non sensible est saisie ici et persistée côté serveur; les secrets AWS restent dans l’environnement du serveur.
+            La configuration S3/R2 est maintenant lue directement depuis l’environnement du serveur; la page affiche ces valeurs effectives mais ne les persiste plus.
           </p>
         </div>
         <div class="hero-stats">
@@ -91,11 +91,11 @@
               </div>
               <div class="field-group">
                 <label for="s3BucketInput">Bucket</label>
-                <input id="s3BucketInput" type="text" placeholder="my-bucket" />
+                <input id="s3BucketInput" type="text" placeholder="AWS_BUCKET" readonly />
               </div>
               <div class="field-group">
                 <label for="s3PrefixInput">Prefix</label>
-                <input id="s3PrefixInput" type="text" placeholder="fast-fashion/images" />
+                <input id="s3PrefixInput" type="text" placeholder="AWS_PREFIX" readonly />
               </div>
               <div class="field-group">
                 <label for="s3LimitInput">Nombre de ressources</label>
