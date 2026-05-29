@@ -1360,6 +1360,7 @@ def make_s3_job_context() -> dict[str, Any]:
         'load_s3_state': load_s3_state,
         'parse_json_list': parse_json_list,
         'persist_upload_item': persist_upload_job_item,
+        'update_job': S3_JOB_MANAGER.update_job,
     }
 
 
@@ -2586,7 +2587,10 @@ class Handler(SimpleHTTPRequestHandler):
         if start_mode == 'start_job':
             future = S3_JOB_MANAGER.start_job(**kwargs)
         elif start_mode == 'start_custom_job':
+            initial_patch = dict(run_spec.get('initial_job_patch') or {})
             future = S3_JOB_MANAGER.start_custom_job(**kwargs)
+            if initial_patch:
+                S3_JOB_MANAGER.update_job(job_id, **initial_patch)
         else:
             raise ValueError(f'Unsupported S3 job runner mode: {start_mode}')
         json_response(self, {

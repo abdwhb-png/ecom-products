@@ -1,6 +1,7 @@
 const API_TOKEN_STORAGE_KEY = 'fast-fashion-api-token';
 const ACTIVE_JOB_STATUSES = ['running', 'queued', 'cancel_requested'];
 const DETAIL_PAGE_SIZE = 50;
+const JOB_POLL_INTERVAL_MS = 1500;
 const PREVIEW_STATUS = 'preview';
 
 const JOB_FAMILY_CONFIG = {
@@ -151,6 +152,11 @@ const state = {
   unlocked: false,
   pollTimer: null,
   selectedJobId: null,
+  pendingJobIdByFamily: {
+    upload: null,
+    url_migration: null,
+    state_cleanup: null,
+  },
   selectedJobDetail: null,
   detailPage: 1,
   detailPageSize: DETAIL_PAGE_SIZE,
@@ -225,7 +231,7 @@ async function init() {
   await loadDatasets();
   await hydrateAuthState();
   await refreshAllFamilyJobs();
-  state.pollTimer = setInterval(refreshAllFamilyJobs, 5000);
+  state.pollTimer = setInterval(refreshAllFamilyJobs, JOB_POLL_INTERVAL_MS);
 }
 
 function bindEvents() {
@@ -413,6 +419,14 @@ async function refreshFamilyJobs(family, { quietAuth = false } = {}) {
 function updateGlobalStateFromFamilies() {
   const jobs = allJobs();
   const active = jobs.filter((job) => ACTIVE_JOB_STATUSES.includes(job.status));
+  Object.keys(state.pendingJobIdByFamily).forEach((family) => {
+    const pendingJobId = state.pendingJobIdByFamily[family];
+    if (!pendingJobId) return;
+    const matched = (state.familyJobs[family] || []).find((job) => job.job_id === pendingJobId);
+    if (matched && !ACTIVE_JOB_STATUSES.includes(matched.status)) {
+      state.pendingJobIdByFamily[family] = null;
+    }
+  });
   els.activeJobsCount.textContent = String(active.length);
   els.s3BucketInput.value = state.serverConfig.bucket;
   els.s3PrefixInput.value = state.serverConfig.prefix;
@@ -479,13 +493,18 @@ function updateFamilyHint(family, jobs) {
   const config = getFamilyConfig(family);
   const hintEl = config.getHintEl();
   if (!hintEl) return;
-  const latest = jobs[0];
+  const pendingJobId = state.pendingJobIdByFamily[family];
+  const pendingJob = pendingJobId ? jobs.find((job) => job.job_id === pendingJobId) : null;
+  const latest = pendingJob || jobs[0];
   if (!latest) {
     hintEl.textContent = config.hintDefault;
     return;
   }
   const mode = latest.dry_run ? 'dry-run' : 'write';
-  hintEl.textContent = `Dernier ${config.title.toLowerCase()}: ${latest.status} · ${latest.processed || 0}/${latest.total || 0} · ${mode}`;
+  const processingLabel = ACTIVE_JOB_STATUSES.includes(latest.status)
+    ? ' · mise à jour temps réel…'
+    : '';
+  hintEl.textContent = `Dernier ${config.title.toLowerCase()}: ${latest.status} · ${latest.processed || 0}/${latest.total || 0} · ${mode}${processingLabel}`;
 }
 
 async function openJobDetails(jobId, page = 1, options = {}) {
@@ -493,7 +512,7 @@ async function openJobDetails(jobId, page = 1, options = {}) {
   state.selectedJobId = jobId;
   state.detailPage = page;
   openModalShell();
-  if (!options.quiet) renderJobDetailsLoading(jobId, page);
+  if (!options.quiet) renderJobDetailsLoading(jobId, page, options.job);
   const response = await fetch(`/api/s3/jobs/${encodeURIComponent(jobId)}?page=${page}&page_size=${state.detailPageSize}`, { credentials: 'include', headers: getApiHeaders() });
   if (!response.ok) return;
   const payload = await response.json();
@@ -519,26 +538,28 @@ function syncCancelButtons() {
   }
 }
 
-function renderJobDetailsLoading(jobId, page) {
+function renderJobDetailsLoading(jobId, page, job = null) {
+  const family = getFamilyConfig(job?.job_family || state.activeFamily || 'upload');
   els.jobModalTitle.textContent = jobId || 'Job';
-  els.jobModalStatus.textContent = 'loading';
-  els.jobModalDryRun.classList.add('hidden');
+  els.jobModalStatus.textContent = job?.status || 'loading';
+  els.jobModalStatus.className = `job-pill job-${escapeHtml(job?.status || 'queued')}`;
+  els.jobModalDryRun.classList.toggle('hidden', !job?.dry_run);
   syncCancelButtons();
   els.jobModalSummary.innerHTML = `
-    <div class="s3-job-kpi"><span>Traités</span><strong>…</strong></div>
-    <div class="s3-job-kpi"><span>Réussis / preview</span><strong>…</strong></div>
-    <div class="s3-job-kpi"><span>Ignorés / Erreurs</span><strong>…</strong></div>
+    <div class="s3-job-kpi"><span>Traités</span><strong>${job ? `${job.processed || 0}/${job.total || 0}` : '…'}</strong></div>
+    <div class="s3-job-kpi"><span>${escapeHtml(family.progressSuccessLabel)}</span><strong>${job ? (job.uploaded || 0) : '…'}</strong></div>
+    <div class="s3-job-kpi"><span>Ignorés / Erreurs</span><strong>${job ? `${job.skipped || 0} / ${job.failed || 0}` : '…'}</strong></div>
   `;
   els.jobModalConfig.innerHTML = `
-    <div><span>Famille</span><strong>—</strong></div>
-    <div><span>Type</span><strong>—</strong></div>
-    <div><span>Bucket</span><strong>—</strong></div>
-    <div><span>Prefix</span><strong>—</strong></div>
-    <div><span>Source filter</span><strong>—</strong></div>
-    <div><span>Démarré</span><strong>—</strong></div>
-    <div><span>Terminé</span><strong>—</strong></div>
-    <div><span>Durée</span><strong>—</strong></div>
-    <div><span>Dernier message</span><strong>Chargement…</strong></div>
+    <div><span>Famille</span><strong>${escapeHtml(job ? family.detailTypeLabel : '—')}</strong></div>
+    <div><span>Type</span><strong>${escapeHtml(job?.kind || '—')}</strong></div>
+    <div><span>Bucket</span><strong>${escapeHtml(job?.bucket || '—')}</strong></div>
+    <div><span>Prefix</span><strong>${escapeHtml(job?.prefix || '—')}</strong></div>
+    <div><span>Source filter</span><strong>${escapeHtml(job?.source_filter || '—')}</strong></div>
+    <div><span>Démarré</span><strong>${escapeHtml(formatTime(job?.started_at))}</strong></div>
+    <div><span>Terminé</span><strong>${escapeHtml(formatTime(job?.ended_at))}</strong></div>
+    <div><span>Durée</span><strong>${escapeHtml(formatDuration(job?.started_at, job?.ended_at))}</strong></div>
+    <div><span>Dernier message</span><strong>${escapeHtml(job?.last_message || 'Chargement…')}</strong></div>
   `;
   els.jobModalProgress.innerHTML = `
     <section class="s3-job-progress-panel is-loading" aria-label="Chargement de la progression">
@@ -819,15 +840,20 @@ async function submitFamilyJobAction(family, dryRun) {
         sample: createdJob.items || [],
       };
     }
+    if (createdJob?.job_id) state.pendingJobIdByFamily[family] = createdJob.job_id;
     if (hintEl) {
-      const total = (dryRun ? state.lastSummaryByFamily[family]?.total : summary?.total) ?? createdJob?.total ?? 0;
+      const total = createdJob?.total ?? (dryRun ? state.lastSummaryByFamily[family]?.total : summary?.total) ?? 0;
       hintEl.textContent = dryRun
-        ? `Preview ${config.title.toLowerCase()} lancé · ${total} item(s) évalué(s).`
-        : `${config.title} lancé${total ? ` · ${total} item(s) visé(s)` : ''}.`;
+        ? `Preview ${config.title.toLowerCase()} lancé · ${total} item(s) détecté(s). Détails en cours de synchro…`
+        : `${config.title} lancé en arrière-plan${total ? ` · ${total} item(s) visé(s)` : ''}.`;
     }
     await refreshFamilyJobs(family);
     updateGlobalStateFromFamilies();
-    if (createdJob?.job_id) await openJobDetails(createdJob.job_id, 1);
+    if (createdJob?.job_id) {
+      setS3Busy(false, { button });
+      await openJobDetails(createdJob.job_id, 1, { job: createdJob });
+      return;
+    }
   } finally {
     setS3Busy(false, { button });
   }

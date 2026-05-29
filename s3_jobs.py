@@ -86,6 +86,39 @@ class S3JobManager:
             job = self._jobs.get(job_id)
             return asdict(job) if job else None
 
+    def update_job(self, job_id: str, **patch):
+        with self._mutex:
+            job = self._jobs.get(job_id)
+            if not job:
+                return None
+
+            normalized_patch = dict(patch)
+            if any(key in normalized_patch for key in {'kind', 'job_family', 'dry_run'}):
+                metadata = normalize_job_metadata(
+                    kind=normalized_patch.get('kind', job.kind),
+                    job_family=normalized_patch.get('job_family', job.job_family),
+                    dry_run=normalized_patch.get('dry_run', job.dry_run),
+                )
+                normalized_patch.update(metadata)
+
+            for field_name, value in normalized_patch.items():
+                if field_name not in JOB_STATE_FIELDS or field_name == 'job_id' or value is None:
+                    continue
+                if field_name in {'limit', 'concurrency'}:
+                    try:
+                        value = max(1, int(value))
+                    except Exception:
+                        continue
+                elif field_name in {'total', 'processed', 'uploaded', 'skipped', 'failed'}:
+                    try:
+                        value = max(0, int(value))
+                    except Exception:
+                        continue
+                setattr(job, field_name, value)
+
+            self._persist_jobs_best_effort_unlocked()
+            return asdict(job)
+
     def start_job(
         self,
         *,

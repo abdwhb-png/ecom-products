@@ -267,32 +267,30 @@ def collect_url_migration_changes(payload: dict[str, Any], context: dict[str, An
     public_url = str(context['resolve_aws_public_url']() or '').strip()
     if not public_url:
         raise ValueError('Missing AWS_URL')
-    conn = context['db_connect']()
-    try:
-        changes = migrate_collect_changes(conn, public_url)
-    finally:
-        conn.close()
     return {
         'dataset_id': 'all',
         'source': 'migration',
         'public_url': public_url,
-        'changes': changes,
         'sample_limit': sample_limit,
         'bucket': str(context['resolve_aws_bucket']() or '').strip() or None,
         'prefix': str(context['resolve_aws_prefix']() or '').strip(),
-        'total': len(changes),
+        'total': 0,
     }
 
 
 def build_url_migration_runner(job_id: str, dry_run: bool, collected: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    total = min(len(collected['changes']), collected['sample_limit']) if dry_run else len(collected['changes'])
-
     def runner(record_item: Callable[[dict[str, Any]], None], cancel_event) -> None:
         run_conn = context['db_connect']()
         try:
             run_conn.row_factory = sqlite3.Row
             local_changes = migrate_collect_changes(run_conn, collected['public_url'])
             selected = local_changes[: collected['sample_limit']] if dry_run else local_changes
+            context['update_job'](
+                job_id,
+                total=len(selected),
+                limit=max(1, len(selected) or 1),
+                last_message='Prévisualisation prête.' if dry_run else f"{len(selected)} élément(s) à traiter.",
+            )
             if dry_run:
                 for change in selected:
                     if cancel_event.is_set():
@@ -335,14 +333,17 @@ def build_url_migration_runner(job_id: str, dry_run: bool, collected: dict[str, 
             'job_id': job_id,
             'dataset_id': collected['dataset_id'],
             'source': collected['source'],
-            'total': total,
+            'total': 0,
             'runner': runner,
             'bucket': collected['bucket'],
             'prefix': collected['prefix'],
             'concurrency': 1,
-            'limit': total,
+            'limit': 1,
             'dry_run': dry_run,
             'job_family': URL_MIGRATION_JOB_FAMILY,
+        },
+        'initial_job_patch': {
+            'last_message': 'Analyse en arrière-plan…',
         },
     }
 
@@ -368,31 +369,29 @@ def summarize_url_migration(collected: dict[str, Any], _context: dict[str, Any])
 def collect_state_cleanup_changes(payload: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     sample_limit = parse_positive_int(payload.get('sample_limit', 25), 25, maximum=200)
     bucket = str(context['resolve_aws_bucket']() or '').strip()
-    conn = context['db_connect']()
-    try:
-        changes = s3_cleanup_collect(conn, bucket=bucket)
-    finally:
-        conn.close()
     return {
         'dataset_id': 'all',
         'source': 'cleanup',
-        'changes': changes,
         'sample_limit': sample_limit,
         'bucket': bucket or None,
         'prefix': str(context['resolve_aws_prefix']() or '').strip(),
-        'total': len(changes),
+        'total': 0,
     }
 
 
 def build_state_cleanup_runner(job_id: str, dry_run: bool, collected: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    total = min(len(collected['changes']), collected['sample_limit']) if dry_run else len(collected['changes'])
-
     def runner(record_item: Callable[[dict[str, Any]], None], cancel_event) -> None:
         run_conn = context['db_connect']()
         try:
             run_conn.row_factory = sqlite3.Row
             local_changes = s3_cleanup_collect(run_conn, bucket=str(collected.get('bucket') or ''))
             selected = local_changes[: collected['sample_limit']] if dry_run else local_changes
+            context['update_job'](
+                job_id,
+                total=len(selected),
+                limit=max(1, len(selected) or 1),
+                last_message='Prévisualisation prête.' if dry_run else f"{len(selected)} élément(s) à traiter.",
+            )
             if dry_run:
                 for change in selected:
                     if cancel_event.is_set():
@@ -437,14 +436,17 @@ def build_state_cleanup_runner(job_id: str, dry_run: bool, collected: dict[str, 
             'job_id': job_id,
             'dataset_id': collected['dataset_id'],
             'source': collected['source'],
-            'total': total,
+            'total': 0,
             'runner': runner,
             'bucket': collected['bucket'],
             'prefix': collected['prefix'],
             'concurrency': 1,
-            'limit': total,
+            'limit': 1,
             'dry_run': dry_run,
             'job_family': STATE_CLEANUP_JOB_FAMILY,
+        },
+        'initial_job_patch': {
+            'last_message': 'Analyse en arrière-plan…',
         },
     }
 
