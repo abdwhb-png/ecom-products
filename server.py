@@ -21,6 +21,7 @@ import unicodedata
 
 from dataset_service import load_dotenv
 from s3_jobs import S3JobManager
+from scripts.cleanup_stale_s3_objects import apply_cleanup as s3_cleanup_apply, collect_stale_rows as s3_cleanup_collect, write_backup as s3_cleanup_write_backup
 from scripts.migrate_aws_public_urls import apply_changes as migrate_apply_changes, collect_changes as migrate_collect_changes, write_backup as migrate_write_backup
 
 ROOT = Path(__file__).resolve().parent
@@ -673,6 +674,26 @@ OPENAPI_SPEC = {
                     },
                 },
             },
+            'S3CleanupJobCreateRequest': {
+                'type': 'object',
+                'properties': {
+                    'preview': {'type': 'boolean', 'default': False},
+                    'sample_limit': {'type': 'integer', 'minimum': 1, 'maximum': 200, 'default': 25},
+                },
+            },
+            'S3CleanupSummary': {
+                'type': 'object',
+                'required': ['total', 'sample_limit', 'sample', 'current_bucket'],
+                'properties': {
+                    'total': {'type': 'integer'},
+                    'sample_limit': {'type': 'integer'},
+                    'current_bucket': {'type': ['string', 'null']},
+                    'sample': {
+                        'type': 'array',
+                        'items': {'type': 'object', 'additionalProperties': True},
+                    },
+                },
+            },
             'S3JobAcceptedResponse': {
                 'type': 'object',
                 'required': ['data', 'future'],
@@ -1069,6 +1090,48 @@ OPENAPI_SPEC = {
                 'responses': {
                     '202': {
                         'description': 'Migration job created.',
+                        'content': {'application/json': {'schema': {'$ref': '#/components/schemas/S3JobAcceptedResponse'}}},
+                    },
+                    '400': {'$ref': '#/components/responses/BadRequest'},
+                    '401': {'$ref': '#/components/responses/Unauthorized'},
+                },
+            }
+        },
+        '/api/s3/cleanup-summary': {
+            'get': {
+                'tags': ['s3'],
+                'operationId': 'getS3CleanupSummary',
+                'summary': 'Preview stale S3-state cleanup impact',
+                'description': 'Returns how many saved-on-S3 records would be cleared by the stale-state cleanup, plus a small sample.',
+                'security': [{'bearerAuth': []}],
+                'responses': {
+                    '200': {
+                        'description': 'Cleanup impact summary.',
+                        'content': {'application/json': {'schema': {'type': 'object', 'properties': {'data': {'$ref': '#/components/schemas/S3CleanupSummary'}}}}},
+                    },
+                    '400': {'$ref': '#/components/responses/BadRequest'},
+                    '401': {'$ref': '#/components/responses/Unauthorized'},
+                },
+            }
+        },
+        '/api/s3/cleanup-jobs': {
+            'post': {
+                'tags': ['s3'],
+                'operationId': 'createS3CleanupJob',
+                'summary': 'Create stale-state cleanup job',
+                'description': 'Starts a background job that clears saved-on-S3 state for stale records after bucket/access changes.',
+                'security': [{'bearerAuth': []}],
+                'requestBody': {
+                    'required': False,
+                    'content': {
+                        'application/json': {
+                            'schema': {'$ref': '#/components/schemas/S3CleanupJobCreateRequest'},
+                        }
+                    },
+                },
+                'responses': {
+                    '202': {
+                        'description': 'Cleanup job created.',
                         'content': {'application/json': {'schema': {'$ref': '#/components/schemas/S3JobAcceptedResponse'}}},
                     },
                     '400': {'$ref': '#/components/responses/BadRequest'},
@@ -1864,6 +1927,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return json_response(self, {'data': {'authenticated': auth_required(self)}})
             if parsed.path == '/api/s3/migration-summary' and not s3_access_is_valid(self):
                 return s3_admin_required_response(self)
+            if parsed.path == '/api/s3/cleanup-summary' and not s3_access_is_valid(self):
+                return s3_admin_required_response(self)
             if parsed.path == '/api/s3/config' and not s3_access_is_valid(self):
                 return s3_admin_required_response(self)
             if parsed.path == '/api/s3/jobs' and not s3_access_is_valid(self):
@@ -1891,6 +1956,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.handle_s3_job_detail(job_id)
             if parsed.path == '/api/s3/migration-summary':
                 return self.handle_s3_migration_summary()
+            if parsed.path == '/api/s3/cleanup-summary':
+                return self.handle_s3_cleanup_summary()
             if parsed.path == '/api/s3/config':
                 return self.handle_s3_config_get()
             return super().do_GET()
@@ -1921,6 +1988,12 @@ class Handler(SimpleHTTPRequestHandler):
                 if not s3_access_is_valid(self):
                     return s3_admin_required_response(self)
                 return self.handle_s3_migration_job_create()
+            if parsed.path == '/api/s3/cleanup-jobs':
+                if not api_token_is_valid(self):
+                    return api_unauthorized_response(self)
+                if not s3_access_is_valid(self):
+                    return s3_admin_required_response(self)
+                return self.handle_s3_cleanup_job_create()
             if parsed.path.startswith('/api/s3/jobs/') and parsed.path.endswith('/cancel'):
                 if not api_token_is_valid(self):
                     return api_unauthorized_response(self)
@@ -2491,6 +2564,32 @@ class Handler(SimpleHTTPRequestHandler):
             }
         })
 
+    def handle_s3_cleanup_summary(self):
+        bucket = resolve_aws_bucket().strip()
+        conn = db_connect()
+        try:
+            changes = s3_cleanup_collect(conn, bucket=bucket)
+        finally:
+            conn.close()
+        sample_limit = 10
+        json_response(self, {
+            'data': {
+                'total': len(changes),
+                'sample_limit': sample_limit,
+                'current_bucket': bucket or None,
+                'sample': [
+                    {
+                        'goods_id': change['goods_id'],
+                        'bucket': change['bucket'],
+                        'current_bucket': change['current_bucket'],
+                        's3_url': change['s3_url'],
+                        'reason': change['reason'],
+                    }
+                    for change in changes[:sample_limit]
+                ],
+            }
+        })
+
     def handle_s3_migration_job_create(self):
         payload = self._read_json_body()
         preview = bool(payload.get('preview', False))
@@ -2569,6 +2668,81 @@ class Handler(SimpleHTTPRequestHandler):
             total=min(len(changes), sample_limit) if preview else len(changes),
             runner=runner,
             bucket=resolve_aws_bucket() or None,
+            prefix=resolve_aws_prefix() or '',
+            concurrency=1,
+            limit=min(len(changes), sample_limit) if preview else len(changes),
+        )
+        json_response(self, {'data': S3_JOB_MANAGER.get_job(job_id), 'future': bool(future)}, status=HTTPStatus.ACCEPTED)
+
+    def handle_s3_cleanup_job_create(self):
+        payload = self._read_json_body() if self.headers.get('Content-Length') else {}
+        preview = parse_bool(payload.get('preview', False))
+        sample_limit = parse_positive_int(payload.get('sample_limit', 25), 25, maximum=200)
+        bucket = resolve_aws_bucket().strip()
+
+        conn = db_connect()
+        try:
+            changes = s3_cleanup_collect(conn, bucket=bucket)
+        finally:
+            conn.close()
+
+        job_id = f"cleanup-{int(time.time())}"
+
+        def runner(record_item, cancel_event):
+            run_conn = db_connect()
+            try:
+                run_conn.row_factory = sqlite3.Row
+                local_changes = s3_cleanup_collect(run_conn, bucket=bucket)
+                if preview:
+                    for change in local_changes[:sample_limit]:
+                        if cancel_event.is_set():
+                            break
+                        record_item({
+                            'status': 'skipped',
+                            'message': 'Preview stale S3-state cleanup item',
+                            'timestamp': time.time(),
+                            'goods_id': change['goods_id'],
+                            'kind': 'cleanup_preview',
+                            'bucket': change['bucket'],
+                            'current_bucket': change['current_bucket'],
+                            's3_url': change['s3_url'],
+                            'reason': change['reason'],
+                        })
+                    return
+
+                backup_path = ROOT / f"s3_objects_cleanup_backup_{int(time.time())}.json"
+                s3_cleanup_write_backup(run_conn, backup_path)
+
+                def on_progress(change):
+                    record_item({
+                        'status': 'uploaded',
+                        'message': 'Cleared stale saved_on_s3 state',
+                        'timestamp': time.time(),
+                        'goods_id': change['goods_id'],
+                        'kind': 'cleanup',
+                        'bucket': change['bucket'],
+                        'current_bucket': change['current_bucket'],
+                        's3_url': change['s3_url'],
+                        'reason': change['reason'],
+                        'backup_path': str(backup_path),
+                    })
+
+                for change in local_changes:
+                    if cancel_event.is_set():
+                        raise RuntimeError('Cleanup cancelled')
+                s3_cleanup_apply(run_conn, local_changes, progress_cb=on_progress)
+                load_s3_state(force=True)
+            finally:
+                run_conn.close()
+
+        future = S3_JOB_MANAGER.start_custom_job(
+            job_id=job_id,
+            dataset_id='all',
+            source='cleanup',
+            kind='cleanup_preview' if preview else 'cleanup',
+            total=min(len(changes), sample_limit) if preview else len(changes),
+            runner=runner,
+            bucket=bucket or None,
             prefix=resolve_aws_prefix() or '',
             concurrency=1,
             limit=min(len(changes), sample_limit) if preview else len(changes),

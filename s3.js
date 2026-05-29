@@ -24,6 +24,9 @@ const els = {
   previewMigrationBtn: document.getElementById('previewMigrationBtn'),
   startMigrationBtn: document.getElementById('startMigrationBtn'),
   migrationHint: document.getElementById('migrationHint'),
+  previewCleanupBtn: document.getElementById('previewCleanupBtn'),
+  startCleanupBtn: document.getElementById('startCleanupBtn'),
+  cleanupHint: document.getElementById('cleanupHint'),
   s3ConfigHint: document.getElementById('s3ConfigHint'),
   activeJobsCount: document.getElementById('activeJobsCount'),
   s3ConfigState: document.getElementById('s3ConfigState'),
@@ -114,6 +117,8 @@ function bindEvents() {
   els.refreshS3JobsBtn.addEventListener('click', refreshS3Jobs);
   els.previewMigrationBtn.addEventListener('click', previewMigration);
   els.startMigrationBtn.addEventListener('click', startMigration);
+  els.previewCleanupBtn.addEventListener('click', previewCleanup);
+  els.startCleanupBtn.addEventListener('click', startCleanup);
   els.jobModalCloseBtn.addEventListener('click', closeJobModal);
   els.jobModalCancelBtn.addEventListener('click', cancelSelectedJob);
   els.jobModalPrev.addEventListener('click', () => {
@@ -165,6 +170,8 @@ function setS3Busy(isBusy, { button = null, loadingText = 'Chargement…' } = {}
     els.refreshS3JobsBtn,
     els.previewMigrationBtn,
     els.startMigrationBtn,
+    els.previewCleanupBtn,
+    els.startCleanupBtn,
     els.startS3JobBtn,
     els.uploadTabBtn,
     els.migrationTabBtn,
@@ -294,6 +301,14 @@ async function refreshS3Jobs() {
       els.migrationHint.textContent = `Dernière migration: ${latestMigration.status} · ${latestMigration.processed || 0}/${latestMigration.total || 0}`;
     } else {
       els.migrationHint.textContent = 'AWS_URL sera utilisé pour réécrire les anciennes URLs stockées.';
+    }
+  }
+  if (els.cleanupHint) {
+    const latestCleanup = state.s3Jobs.find((job) => String(job.kind || '').startsWith('cleanup'));
+    if (latestCleanup) {
+      els.cleanupHint.textContent = `Dernier cleanup: ${latestCleanup.status} · ${latestCleanup.processed || 0}/${latestCleanup.total || 0}`;
+    } else {
+      els.cleanupHint.textContent = 'Utilise ce cleanup pour réinitialiser les anciens états saved_on_s3 devenus obsolètes.';
     }
   }
 }
@@ -720,6 +735,66 @@ async function startMigration() {
     }
   } finally {
     setS3Busy(false, { button: els.startMigrationBtn });
+  }
+}
+
+async function fetchCleanupSummary() {
+  const response = await fetch('/api/s3/cleanup-summary', {
+    credentials: 'include',
+    headers: getApiHeaders(),
+  });
+  if (!response.ok) throw new Error(`Impossible de charger le résumé du cleanup (${response.status})`);
+  const payload = await response.json();
+  return payload?.data || { total: 0, sample_limit: 10, sample: [], current_bucket: null };
+}
+
+async function previewCleanup() {
+  setS3Busy(true, { button: els.previewCleanupBtn, loadingText: 'Prévisualisation…' });
+  try {
+    els.cleanupHint.textContent = 'Prévisualisation du cleanup en cours…';
+    const summary = await fetchCleanupSummary();
+    const response = await fetch('/api/s3/cleanup-jobs', {
+      method: 'POST',
+      credentials: 'include',
+      headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ preview: true, sample_limit: 25 }),
+    });
+    if (!response.ok) throw new Error(`Impossible de lancer le preview du cleanup (${response.status})`);
+    const payload = await response.json();
+    els.cleanupHint.textContent = `Preview cleanup lancé · ${summary.total} item(s) ciblé(s).`;
+    await refreshS3Jobs();
+    if (payload?.data?.job_id) {
+      await openJobDetails(payload.data.job_id, 1);
+    }
+  } finally {
+    setS3Busy(false, { button: els.previewCleanupBtn });
+  }
+}
+
+async function startCleanup() {
+  setS3Busy(true, { button: els.startCleanupBtn, loadingText: 'Préparation…' });
+  try {
+    const summary = await fetchCleanupSummary();
+    setS3Busy(false, { button: els.startCleanupBtn });
+    const confirmed = window.confirm(`Lancer le cleanup des états S3 obsolètes ? ${summary.total} item(s) seront réinitialisé(s). Un backup JSON sera créé avant écriture.`);
+    if (!confirmed) return;
+    setS3Busy(true, { button: els.startCleanupBtn, loadingText: 'Cleanup…' });
+    els.cleanupHint.textContent = `Cleanup en cours… ${summary.total} item(s) à traiter.`;
+    const response = await fetch('/api/s3/cleanup-jobs', {
+      method: 'POST',
+      credentials: 'include',
+      headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ preview: false }),
+    });
+    if (!response.ok) throw new Error(`Impossible de lancer le cleanup (${response.status})`);
+    const payload = await response.json();
+    els.cleanupHint.textContent = `Cleanup lancé · ${summary.total} item(s) visé(s).`;
+    await refreshS3Jobs();
+    if (payload?.data?.job_id) {
+      await openJobDetails(payload.data.job_id, 1);
+    }
+  } finally {
+    setS3Busy(false, { button: els.startCleanupBtn });
   }
 }
 

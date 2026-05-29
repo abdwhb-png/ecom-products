@@ -146,6 +146,7 @@ S3 / AWS notes:
 - S3/R2 config is environment-authoritative: the admin UI reads effective values from env and no longer persists bucket/prefix/endpoint/public URL overrides in SQLite
 - the S3 admin page now exposes a migration section that launches the existing `scripts/migrate_aws_public_urls.py` logic in a background admin job
 - migration preview mode shows a sample without writing; full migration creates a JSON backup of `s3_objects` before updating stored URLs
+- the S3 admin page also exposes a stale-state cleanup flow for resetting old `saved_on_s3` records after bucket/credential/content changes; preview shows the targeted records and full cleanup creates a JSON backup before clearing those persisted S3 flags/URLs
 
 Dashboard notes:
 - the category stat on the homepage reflects the total number of available categories from `/api/categories` pagination metadata, not just the current category-options page

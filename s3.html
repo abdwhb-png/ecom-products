@@ -130,10 +130,22 @@
                 <p class="muted small">Le script existant est lancé en background via l’API admin. Un preview montre un échantillon sans écrire. Le run complet crée un backup JSON avant modification.</p>
               </div>
             </div>
-            <div class="s3-actions">
+            <div class="s3-actions" style="margin-bottom: 12px;">
               <button id="previewMigrationBtn" class="secondary-btn" type="button">Prévisualiser la migration</button>
               <button id="startMigrationBtn" class="primary-btn" type="button">Lancer la migration</button>
               <span id="migrationHint" class="muted small"></span>
+            </div>
+            <div class="section-heading" style="margin-top: 14px;">
+              <div>
+                <p class="eyebrow">Cleanup de l’état S3</p>
+                <h2>Nettoyer les produits marqués saved_on_s3 devenus obsolètes</h2>
+                <p class="muted small">À lancer après un changement de bucket, de credentials ou de contenu distant. Le preview montre les enregistrements ciblés; le run complet crée un backup JSON puis remet leur état S3 à zéro.</p>
+              </div>
+            </div>
+            <div class="s3-actions">
+              <button id="previewCleanupBtn" class="secondary-btn" type="button">Prévisualiser le cleanup</button>
+              <button id="startCleanupBtn" class="primary-btn" type="button">Lancer le cleanup</button>
+              <span id="cleanupHint" class="muted small"></span>
             </div>
           </section>
 
