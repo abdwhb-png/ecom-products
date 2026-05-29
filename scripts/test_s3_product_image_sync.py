@@ -100,15 +100,16 @@ def main() -> int:
     partial_manager._download = fake_partial_download  # type: ignore[method-assign]
     partial_result = partial_manager._process_row(partial_s3, FakeJob(), row, resolve_source_url, None)
 
-    assert partial_result['status'] == 'failed', partial_result
+    assert partial_result['status'] == 'partial', partial_result
     assert partial_result['image_total'] == 3, partial_result
     assert partial_result['image_uploaded'] == 2, partial_result
     assert partial_result['image_failed'] == 1, partial_result
     assert partial_result['saved_on_s3'] is False, partial_result
     assert len(partial_result['s3_urls']) == 2, partial_result
+    assert 'Partial success' in str(partial_result['message']), partial_result
     assert partial_downloads == URLS, partial_downloads
 
-    print('OK: all product images are aggregated, and saved_on_s3 stays false when any image fails')
+    print('OK: all product images are aggregated, and partial uploads stay visible without being counted as fully saved')
     return 0
 
 

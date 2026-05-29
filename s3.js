@@ -594,6 +594,9 @@ function getItemTone(item) {
   if (item?.status === 'failed' || message.includes('timeout') || message.includes('forbidden') || message.includes('no source url') || message.includes('all candidate urls failed')) {
     return 'error';
   }
+  if (item?.status === 'partial' || message.includes('partial success')) {
+    return 'warning';
+  }
   if (item?.status === 'skipped' || message.includes('already exists')) {
     return 'warning';
   }
@@ -601,14 +604,18 @@ function getItemTone(item) {
 }
 
 function getItemNote(item, tone) {
+  const message = String(item?.message || '').toLowerCase();
+  if (item?.status === 'partial' || message.includes('partial success')) {
+    return 'Succès partiel';
+  }
   if (tone === 'error') {
-    if (String(item?.message || '').toLowerCase().includes('no source url')) return 'Échec: URL source manquante';
-    if (String(item?.message || '').toLowerCase().includes('timeout')) return 'Échec: timeout réseau';
-    if (String(item?.message || '').toLowerCase().includes('forbidden')) return 'Échec: accès refusé';
+    if (message.includes('no source url')) return 'Échec: URL source manquante';
+    if (message.includes('timeout')) return 'Échec: timeout réseau';
+    if (message.includes('forbidden')) return 'Échec: accès refusé';
     return 'Échec de traitement';
   }
   if (tone === 'warning') {
-    if (String(item?.message || '').toLowerCase().includes('already exists')) return 'Ignoré: déjà présent sur S3';
+    if (message.includes('already exists')) return 'Ignoré: déjà présent sur S3';
     return 'Ignoré';
   }
   return 'Succès';

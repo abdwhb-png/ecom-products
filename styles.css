@@ -1341,6 +1341,7 @@ select[disabled] {
 .job-interrupted { background: rgba(251, 146, 60, 0.18); color: #fdba74; }
 .job-completed { background: rgba(52, 211, 153, 0.16); color: #bbf7d0; }
 .job-failed { background: rgba(244, 114, 182, 0.16); color: #f9a8d4; }
+.job-partial { background: rgba(251, 191, 36, 0.16); color: #fde68a; }
 .job-migration { background: rgba(168, 85, 247, 0.18); color: #e9d5ff; border-color: rgba(168, 85, 247, 0.28); text-transform: uppercase; letter-spacing: 0.04em; }
 
 .s3-job-empty { color: var(--muted); padding: 10px 0; }

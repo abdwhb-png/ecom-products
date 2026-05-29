@@ -50,6 +50,9 @@ class S3JobState:
 JOB_STATE_FIELDS = {field.name for field in fields(S3JobState)}
 
 
+PARTIAL_UPLOAD_STATUS = 'partial'
+
+
 class S3JobManager:
     def __init__(
         self,
@@ -180,6 +183,8 @@ class S3JobManager:
                     current.uploaded += 1
                 elif status == 'skipped':
                     current.skipped += 1
+                elif status == PARTIAL_UPLOAD_STATUS:
+                    current.uploaded += 1
                 else:
                     current.failed += 1
                 message = item.get('message')
@@ -245,6 +250,8 @@ class S3JobManager:
                                     job.uploaded += 1
                                 elif result.get('status') == 'skipped':
                                     job.skipped += 1
+                                elif result.get('status') == PARTIAL_UPLOAD_STATUS:
+                                    job.uploaded += 1
                                 else:
                                     job.failed += 1
                                 job.last_message = result.get('message') or job.last_message
@@ -252,6 +259,8 @@ class S3JobManager:
                                 job.uploaded += 1
                             elif result == 'skipped':
                                 job.skipped += 1
+                            elif result == PARTIAL_UPLOAD_STATUS:
+                                job.uploaded += 1
                             else:
                                 job.failed += 1
                             self._persist_jobs_best_effort_unlocked()
@@ -374,7 +383,8 @@ class S3JobManager:
                     'error': f'{type(exc).__name__}: {exc}',
                 })
 
-        item['saved_on_s3'] = bool(candidates) and item['image_failed'] == 0 and len(item['s3_urls']) == len(candidates)
+        uploaded_or_existing = len(item['s3_urls'])
+        item['saved_on_s3'] = bool(candidates) and item['image_failed'] == 0 and uploaded_or_existing == len(candidates)
         if item['saved_on_s3']:
             if item['image_uploaded'] and item['image_existing']:
                 item['status'] = 'uploaded'
@@ -385,12 +395,18 @@ class S3JobManager:
             else:
                 item['status'] = 'skipped'
                 item['message'] = 'All product images already exist on S3'
+        elif uploaded_or_existing > 0:
+            item['status'] = PARTIAL_UPLOAD_STATUS
+            partial_bits = []
+            if item['image_uploaded']:
+                partial_bits.append(f"{item['image_uploaded']} uploaded")
+            if item['image_existing']:
+                partial_bits.append(f"{item['image_existing']} already existed")
+            partial_summary = '; '.join(partial_bits) if partial_bits else f'{uploaded_or_existing} available on S3'
+            item['message'] = f"Partial success: {uploaded_or_existing}/{len(candidates)} image(s) available on S3; {item['image_failed']} failed ({partial_summary})"
         else:
             item['status'] = 'failed'
-            if item['s3_urls']:
-                item['message'] = f"Uploaded {len(item['s3_urls'])}/{len(candidates)} image(s); {item['image_failed']} failed"
-            else:
-                item['message'] = f'All product image uploads failed: {last_error}' if last_error else 'All product image uploads failed'
+            item['message'] = f'All product image uploads failed: {last_error}' if last_error else 'All product image uploads failed'
 
         if callable(on_uploaded):
             try:
