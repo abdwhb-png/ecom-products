@@ -44,6 +44,7 @@ class S3JobState:
     source_filter: str | None = None
     last_message: str | None = None
     items: list[dict[str, Any]] | None = None
+    kind: str = 'upload'
 
 
 JOB_STATE_FIELDS = {field.name for field in fields(S3JobState)}
@@ -93,6 +94,7 @@ class S3JobManager:
                 status='running',
                 started_at=time.time(),
                 items=[],
+                kind='upload',
             )
             self._jobs[job_id] = job
             self._locks[job_id] = threading.Event()
@@ -108,6 +110,47 @@ class S3JobManager:
         )
         return future
 
+    def start_custom_job(
+        self,
+        *,
+        job_id: str,
+        dataset_id: str,
+        source: str,
+        kind: str,
+        total: int,
+        runner: Callable[[Callable[[dict[str, Any]], None], threading.Event], None],
+        bucket: str | None = None,
+        prefix: str | None = '',
+        concurrency: int = 1,
+        source_filter: str | None = None,
+        limit: int | None = None,
+    ):
+        with self._mutex:
+            if job_id in self._jobs and self._jobs[job_id].status in ACTIVE_JOB_STATUSES:
+                raise ValueError(f'Job already running: {job_id}')
+            job = S3JobState(
+                job_id=job_id,
+                dataset_id=dataset_id,
+                source=source,
+                bucket=bucket,
+                prefix=prefix,
+                limit=max(1, int(limit or total or 1)),
+                concurrency=max(1, int(concurrency or 1)),
+                source_filter=source_filter,
+                total=max(0, int(total or 0)),
+                status='running',
+                started_at=time.time(),
+                items=[],
+                kind=kind,
+            )
+            self._jobs[job_id] = job
+            cancel_event = threading.Event()
+            self._locks[job_id] = cancel_event
+            self._persist_jobs_best_effort_unlocked()
+
+        future = self._executor.submit(self._run_custom_job, job_id, runner, cancel_event)
+        return future
+
     def cancel_job(self, job_id: str):
         with self._mutex:
             job = self._jobs.get(job_id)
@@ -120,6 +163,58 @@ class S3JobManager:
                 event.set()
             self._persist_jobs_best_effort_unlocked()
             return True
+
+    def _run_custom_job(self, job_id: str, runner: Callable[[Callable[[dict[str, Any]], None], threading.Event], None], cancel_event: threading.Event):
+        with self._mutex:
+            job = self._jobs[job_id]
+
+        def record(item: dict[str, Any]):
+            with self._mutex:
+                current = self._jobs[job_id]
+                current.processed += 1
+                if current.items is None:
+                    current.items = []
+                current.items.append(item)
+                status = str(item.get('status') or '').lower()
+                if status == 'uploaded':
+                    current.uploaded += 1
+                elif status == 'skipped':
+                    current.skipped += 1
+                else:
+                    current.failed += 1
+                message = item.get('message')
+                if message:
+                    current.last_message = str(message)
+                self._persist_jobs_best_effort_unlocked()
+
+        try:
+            runner(record, cancel_event)
+            with self._mutex:
+                current = self._jobs[job_id]
+                current.status = 'cancelled' if current.cancel_requested else 'completed'
+                current.ended_at = time.time()
+                self._persist_jobs_best_effort_unlocked()
+        except Exception as exc:
+            with self._mutex:
+                current = self._jobs[job_id]
+                if current.cancel_requested or cancel_event.is_set():
+                    current.status = 'cancelled'
+                    current.last_message = str(exc)
+                    current.ended_at = time.time()
+                    self._persist_jobs_best_effort_unlocked()
+                    return
+                current.status = 'failed'
+                current.error = str(exc)
+                current.last_message = str(exc)
+                current.ended_at = time.time()
+                if current.items is None:
+                    current.items = []
+                current.items.append({
+                    'status': 'failed',
+                    'message': str(exc),
+                    'timestamp': time.time(),
+                })
+                self._persist_jobs_best_effort_unlocked()
 
     def _run_job(self, job_id: str, rows: list[dict[str, Any]], s3_client_factory, resolve_source_url, on_uploaded):
         with self._mutex:

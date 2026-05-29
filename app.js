@@ -337,6 +337,7 @@ async function fetchProducts() {
 async function fetchCategories() {
   const params = new URLSearchParams({
     dataset: state.currentDataset,
+    search: state.search,
     page: String(state.categoryPage),
     pageSize: String(state.categoryPageSize),
   });

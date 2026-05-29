@@ -35,7 +35,7 @@
 
       <section id="authGate" class="auth-gate">
         <h2>Accès protégé</h2>
-        <p>Entre le mot de passe S3 pour déverrouiller cette page.</p>
+        <p>Entre le mot de passe admin S3 pour déverrouiller cette page.</p>
         <div class="auth-row">
           <input id="passwordInput" type="password" placeholder="Mot de passe" />
           <button id="unlockBtn" class="primary-btn" type="button">Déverrouiller</button>
@@ -81,6 +81,21 @@
             <button id="startS3JobBtn" class="primary-btn" type="button">Lancer l’upload S3</button>
             <button id="stopS3JobBtn" class="secondary-btn" type="button">Stop job actif</button>
             <span id="s3ConfigHint" class="muted small"></span>
+          </div>
+        </section>
+
+        <section class="s3-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Migration des URLs existantes</p>
+              <h2>Réécrire les anciens s3:// en URLs publiques AWS_URL</h2>
+              <p class="muted small">Le script existant est lancé en background via l’API admin. Un preview montre un échantillon sans écrire. Le run complet crée un backup JSON avant modification.</p>
+            </div>
+          </div>
+          <div class="s3-actions">
+            <button id="previewMigrationBtn" class="secondary-btn" type="button">Prévisualiser la migration</button>
+            <button id="startMigrationBtn" class="primary-btn" type="button">Lancer la migration</button>
+            <span id="migrationHint" class="muted small"></span>
           </div>
         </section>
 

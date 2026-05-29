@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 import sys
+import unicodedata
 from pathlib import Path
 
 from dataset_service import DatasetDownloadService, load_dotenv
@@ -153,6 +154,8 @@ def shein_local_rows(path: Path):
                 'url': (row.get('url') or '').strip(),
                 'source': 'Shein Bright Data sample',
                 'search_text': ' '.join(filter(None, search_parts)).lower(),
+                'category_search': _normalize_search_text(category),
+                'category_path_search': _normalize_search_text(''),
             }
 
 
@@ -189,6 +192,8 @@ def asos_local_rows(path: Path):
                 'url': (row.get('url') or '').strip(),
                 'source': 'ASOS Hugging Face sample',
                 'search_text': search_text,
+                'category_search': _normalize_search_text(category),
+                'category_path_search': _normalize_search_text(''),
             }
 
 
@@ -235,6 +240,8 @@ def rebuild_db(force_download: bool = False):
             description TEXT,
             category TEXT,
             category_path TEXT,
+            category_search TEXT,
+            category_path_search TEXT,
             price REAL,
             price_text TEXT,
             rating REAL,
@@ -312,11 +319,11 @@ def rebuild_db(force_download: bool = False):
         conn.executemany(
             '''
             INSERT INTO products (
-              dataset_id, id, name, description, category, category_path, price, price_text,
+              dataset_id, id, name, description, category, category_path, category_search, category_path_search, price, price_text,
               rating, reviews_count, brand, color, size_text, sizes_json, image,
               image_urls_json, image_count, url, source, search_text
             ) VALUES (
-              :dataset_id, :id, :name, :description, :category, :category_path, :price, :price_text,
+              :dataset_id, :id, :name, :description, :category, :category_path, :category_search, :category_path_search, :price, :price_text,
               :rating, :reviews_count, :brand, :color, :size_text, :sizes_json, :image,
               :image_urls_json, :image_count, :url, :source, :search_text
             )
@@ -335,6 +342,8 @@ def rebuild_db(force_download: bool = False):
 
     conn.execute('CREATE INDEX idx_products_dataset ON products(dataset_id)')
     conn.execute('CREATE INDEX idx_products_dataset_category ON products(dataset_id, category)')
+    conn.execute('CREATE INDEX idx_products_dataset_category_search ON products(dataset_id, category_search)')
+    conn.execute('CREATE INDEX idx_products_dataset_category_path_search ON products(dataset_id, category_path_search)')
     conn.execute('CREATE INDEX idx_products_dataset_price ON products(dataset_id, price)')
     conn.execute('CREATE INDEX idx_products_dataset_image_count ON products(dataset_id, image_count)')
     conn.execute('CREATE INDEX idx_products_dataset_name ON products(dataset_id, name)')

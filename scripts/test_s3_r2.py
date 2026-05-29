@@ -74,9 +74,9 @@ def main() -> int:
     load_env_file(repo_root / '.env')
 
     parser = argparse.ArgumentParser(description='Smoke test S3-compatible operations against Cloudflare R2 or AWS S3.')
-    parser.add_argument('--bucket', default=env('S3_BUCKET') or env('FAST_FASHION_S3_BUCKET'), help='Target bucket name (defaults to S3_BUCKET from env)')
-    parser.add_argument('--endpoint-url', default=env('S3_ENDPOINT_URL') or env('AWS_ENDPOINT_URL'), help='S3 endpoint URL (defaults to S3_ENDPOINT_URL from env)')
-    parser.add_argument('--region', default=env('AWS_REGION') or env('AWS_DEFAULT_REGION') or env('S3_REGION'), help='Region name (defaults to env, or auto for R2)')
+    parser.add_argument('--bucket', default=env('AWS_BUCKET'), help='Target bucket name (defaults to AWS_BUCKET from env)')
+    parser.add_argument('--endpoint-url', default=env('AWS_ENDPOINT_URL'), help='S3-compatible API endpoint URL (defaults to AWS_ENDPOINT_URL from env)')
+    parser.add_argument('--region', default=env('AWS_REGION') or env('AWS_DEFAULT_REGION'), help='Region name (defaults to AWS_REGION/AWS_DEFAULT_REGION, or auto for R2)')
     parser.add_argument('--prefix', default=f'openclaw-smoke/{time.strftime("%Y%m%d-%H%M%S")}', help='Object prefix used for the smoke test')
     parser.add_argument('--keep-object', action='store_true', help='Keep the uploaded object instead of deleting it at the end')
     parser.add_argument('--json', action='store_true', help='Print a JSON summary instead of human-readable logs')
@@ -84,9 +84,9 @@ def main() -> int:
 
     missing = []
     if not args.bucket:
-        missing.append('S3_BUCKET')
+        missing.append('AWS_BUCKET')
     if not args.endpoint_url:
-        missing.append('S3_ENDPOINT_URL')
+        missing.append('AWS_ENDPOINT_URL')
     if not (env('AWS_ACCESS_KEY_ID') or env('AWS_ACCESS_KEY')):
         missing.append('AWS_ACCESS_KEY_ID')
     if not (env('AWS_SECRET_ACCESS_KEY') or env('AWS_SECRET_KEY')):

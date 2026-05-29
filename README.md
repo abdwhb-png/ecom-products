@@ -136,6 +136,13 @@ Query params:
 - `imagesOnly` — only products that have at least one source image in the imported catalog
 - `savedOnS3` — only products whose runtime S3 state is marked as saved in SQLite
 
+S3 / AWS notes:
+- `AWS_ENDPOINT_URL` = endpoint API S3-compatible used by the uploader backend (for example R2 S3 API endpoint)
+- `AWS_URL` = public base URL returned by the app and used by the migration script/UI to rewrite stored `s3://...` values into public URLs
+- `FAST_FASHION_S3_ADMIN_PASSWORD` = admin password for the protected S3 area (upload jobs, migration jobs, S3 config UI/API)
+- the S3 admin page now exposes a migration section that launches the existing `scripts/migrate_aws_public_urls.py` logic in a background admin job
+- migration preview mode shows a sample without writing; full migration creates a JSON backup of `s3_objects` before updating stored URLs
+
 Dashboard notes:
 - the category stat on the homepage reflects the total number of available categories from `/api/categories` pagination metadata, not just the current category-options page
 - the category select itself is paginated server-side in the frontend to stay responsive on very large datasets such as ASOS

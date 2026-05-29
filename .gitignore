@@ -32,3 +32,7 @@ fast-fashion-dashboard/downloads/
 s3_state.json
 s3_jobs_state.json
 .tmp-run-s3*.sh
+
+# Ignore generated migration backups
+s3_objects_backup_*.json
+s3_state.json.bak.*

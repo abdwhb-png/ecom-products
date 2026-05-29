@@ -17,9 +17,11 @@ from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
+import unicodedata
 
 from dataset_service import load_dotenv
 from s3_jobs import S3JobManager
+from scripts.migrate_aws_public_urls import apply_changes as migrate_apply_changes, collect_changes as migrate_collect_changes, write_backup as migrate_write_backup
 
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv('FAST_FASHION_DB_PATH', str(ROOT / 'catalog.db')))
@@ -54,7 +56,7 @@ CORS_HEADERS = {
     'X-Frame-Options': 'DENY',
 }
 API_BEARER_TOKEN = os.getenv('FAST_FASHION_API_TOKEN', '').strip()
-S3_PASSWORD = os.getenv('FAST_FASHION_S3_PASSWORD', '').strip()
+S3_ADMIN_PASSWORD = os.getenv('FAST_FASHION_S3_ADMIN_PASSWORD', '').strip()
 S3_AUTH_TOKENS: dict[str, float] = {}
 S3_AUTH_TTL_SECONDS = 60 * 60
 
@@ -67,6 +69,22 @@ def _env_nonempty(*names: str) -> str:
     return ''
 
 
+def resolve_aws_public_url() -> str:
+    return _env_nonempty('AWS_URL')
+
+
+def resolve_aws_endpoint_url() -> str:
+    return _env_nonempty('AWS_ENDPOINT_URL')
+
+
+def resolve_aws_bucket() -> str:
+    return _env_nonempty('AWS_BUCKET')
+
+
+def resolve_aws_prefix() -> str:
+    return _env_nonempty('AWS_PREFIX')
+
+
 def resolve_s3_region(endpoint_url: str | None = None, explicit_region: str | None = None) -> str | None:
     region = (explicit_region or '').strip()
     if region:
@@ -74,10 +92,56 @@ def resolve_s3_region(endpoint_url: str | None = None, explicit_region: str | No
     endpoint = (endpoint_url or '').strip().lower()
     if 'r2.cloudflarestorage.com' in endpoint:
         return 'auto'
-    env_region = _env_nonempty('AWS_REGION', 'AWS_DEFAULT_REGION', 'S3_REGION')
+    env_region = _env_nonempty('AWS_REGION', 'AWS_DEFAULT_REGION')
     if env_region:
         return env_region
     return 'us-east-1' if endpoint else None
+
+
+def s3_to_public_url(s3_url: str | None, endpoint_url: str | None = None, region: str | None = None) -> str | None:
+    """Convert an s3://bucket/key URL to a public HTTPS URL.
+
+    Heuristics used:
+    - If endpoint_url is provided, prefer endpoint-based construction. For typical S3-compatible endpoints
+      that expose objects at {endpoint}/{bucket}/{key}, return endpoint + / + bucket + / + key.
+    - If endpoint_url looks like an AWS S3 host (contains "amazonaws"), construct virtual-hosted style
+      URL: https://{bucket}.s3.{region}.amazonaws.com/{key} (region-aware, falls back to us-east-1 pattern).
+    - Otherwise fall back to https://{bucket}.s3.amazonaws.com/{key}.
+
+    This covers AWS S3, Cloudflare R2, MinIO, and other S3-compatible endpoints in most setups. If you use
+    a custom public CDN or domain, prefer storing that URL directly when saving s3 state.
+    """
+    if not s3_url or not isinstance(s3_url, str):
+        return None
+    s3_url = s3_url.strip()
+    if not s3_url.startswith('s3://'):
+        return s3_url
+    try:
+        _, rest = s3_url.split('s3://', 1)
+        bucket, key = rest.split('/', 1)
+    except Exception:
+        return s3_url
+    public_base = resolve_aws_public_url()
+    if public_base:
+        public_base = public_base.rstrip('/')
+        return f'{public_base}/{key}'
+    ep = (endpoint_url or '').strip()
+    if ep:
+        ep = ep.rstrip('/')
+        # If the endpoint already includes the bucket in host (rare), try to detect and avoid duplicate
+        # If endpoint contains amazonaws, prefer virtual-hosted style below
+        if 'amazonaws' in ep:
+            reg = region or resolve_s3_region(ep, None) or 'us-east-1'
+            if reg == 'us-east-1':
+                return f'https://{bucket}.s3.amazonaws.com/{key}'
+            return f'https://{bucket}.s3.{reg}.amazonaws.com/{key}'
+        # Generic endpoint: assume path-style public access: endpoint/{bucket}/{key}
+        return f'{ep}/{bucket}/{key}'
+    # No endpoint provided: default to AWS public URL
+    reg = region or resolve_s3_region(None, None) or 'us-east-1'
+    if reg == 'us-east-1':
+        return f'https://{bucket}.s3.amazonaws.com/{key}'
+    return f'https://{bucket}.s3.{reg}.amazonaws.com/{key}'
 
 OPENAPI_SPEC = {
     'openapi': '3.1.0',
@@ -563,6 +627,26 @@ OPENAPI_SPEC = {
                     'source_filter': {'type': 'string'},
                 },
             },
+            'S3MigrationJobCreateRequest': {
+                'type': 'object',
+                'properties': {
+                    'preview': {'type': 'boolean', 'default': False},
+                    'sample_limit': {'type': 'integer', 'minimum': 1, 'maximum': 200, 'default': 25},
+                },
+            },
+            'S3MigrationSummary': {
+                'type': 'object',
+                'required': ['total', 'sample_limit', 'sample', 'public_url'],
+                'properties': {
+                    'total': {'type': 'integer'},
+                    'sample_limit': {'type': 'integer'},
+                    'public_url': {'type': 'string'},
+                    'sample': {
+                        'type': 'array',
+                        'items': {'type': 'object', 'additionalProperties': True},
+                    },
+                },
+            },
             'S3JobAcceptedResponse': {
                 'type': 'object',
                 'required': ['data', 'future'],
@@ -688,6 +772,7 @@ OPENAPI_SPEC = {
                 'security': [{'bearerAuth': []}],
                 'parameters': [
                     {'$ref': '#/components/parameters/dataset'},
+                    {'$ref': '#/components/parameters/search'},
                     {'$ref': '#/components/parameters/page'},
                     {'$ref': '#/components/parameters/pageSize'},
                 ],
@@ -946,6 +1031,48 @@ OPENAPI_SPEC = {
                 },
             }
         },
+        '/api/s3/migration-summary': {
+            'get': {
+                'tags': ['s3'],
+                'operationId': 'getS3MigrationSummary',
+                'summary': 'Preview migration impact',
+                'description': 'Returns how many existing stored s3:// URLs would be rewritten to public AWS_URL-based URLs, plus a small sample.',
+                'security': [{'bearerAuth': []}],
+                'responses': {
+                    '200': {
+                        'description': 'Migration impact summary.',
+                        'content': {'application/json': {'schema': {'type': 'object', 'properties': {'data': {'$ref': '#/components/schemas/S3MigrationSummary'}}}}},
+                    },
+                    '400': {'$ref': '#/components/responses/BadRequest'},
+                    '401': {'$ref': '#/components/responses/Unauthorized'},
+                },
+            }
+        },
+        '/api/s3/migration-jobs': {
+            'post': {
+                'tags': ['s3'],
+                'operationId': 'createS3MigrationJob',
+                'summary': 'Create migration job',
+                'description': 'Starts a background job that converts existing stored s3:// URLs into public AWS_URL-based URLs.',
+                'security': [{'bearerAuth': []}],
+                'requestBody': {
+                    'required': False,
+                    'content': {
+                        'application/json': {
+                            'schema': {'$ref': '#/components/schemas/S3MigrationJobCreateRequest'},
+                        }
+                    },
+                },
+                'responses': {
+                    '202': {
+                        'description': 'Migration job created.',
+                        'content': {'application/json': {'schema': {'$ref': '#/components/schemas/S3JobAcceptedResponse'}}},
+                    },
+                    '400': {'$ref': '#/components/responses/BadRequest'},
+                    '401': {'$ref': '#/components/responses/Unauthorized'},
+                },
+            }
+        },
     },
 }
 
@@ -1019,7 +1146,46 @@ def _load_legacy_s3_jobs_payload() -> list[dict]:
     return jobs if isinstance(jobs, list) else []
 
 
+def _publicize_job_item(item: dict | None) -> dict | None:
+    if not isinstance(item, dict):
+        return item
+    out = dict(item)
+    if isinstance(out.get('s3_urls'), list):
+        out['s3_urls'] = [s3_to_public_url(url) for url in out.get('s3_urls')]
+    if isinstance(out.get('image_pairs'), list):
+        pairs = []
+        for pair in out.get('image_pairs') or []:
+            if not isinstance(pair, dict):
+                pairs.append(pair)
+                continue
+            pair = dict(pair)
+            pair['s3_url'] = s3_to_public_url(pair.get('s3_url'))
+            pairs.append(pair)
+        out['image_pairs'] = pairs
+    if out.get('s3_url'):
+        out['s3_url'] = s3_to_public_url(out.get('s3_url'))
+    if out.get('old_s3_url'):
+        out['old_s3_url'] = s3_to_public_url(out.get('old_s3_url')) if str(out.get('old_s3_url')).startswith('s3://') else out.get('old_s3_url')
+    if out.get('new_s3_url'):
+        out['new_s3_url'] = s3_to_public_url(out.get('new_s3_url')) if str(out.get('new_s3_url')).startswith('s3://') else out.get('new_s3_url')
+    return out
+
+
+def _publicize_job_payload(job: dict | None) -> dict | None:
+    if not isinstance(job, dict):
+        return job
+    out = dict(job)
+    if isinstance(out.get('items'), list):
+        out['items'] = [_publicize_job_item(item) for item in out.get('items')]
+    return out
+
+
 def _maybe_migrate_legacy_s3_state(conn):
+    # Import legacy file-based S3 state only when the SQL tables are still empty.
+    # Otherwise the legacy file would keep overwriting newer DB-backed state.
+    existing_count = conn.execute('SELECT COUNT(*) FROM s3_objects').fetchone()[0]
+    if int(existing_count or 0) > 0:
+        return
     legacy = _load_legacy_s3_state_payload()
     config = legacy.get('config', {})
     objects = legacy.get('objects', {})
@@ -1227,8 +1393,14 @@ def save_s3_state(conn=None):
 
 
 def db_connect():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
+    # Register an SQL-accessible normalization function for accent- and case-insensitive comparisons
+    try:
+        conn.create_function('unaccent', 1, _sql_unaccent)
+    except Exception:
+        # create_function may fail in some environments; continue without it (fallback will still work but without accent folding)
+        pass
     conn.execute(
         '''
         CREATE TABLE IF NOT EXISTS image_status (
@@ -1421,7 +1593,16 @@ def api_unauthorized_response(handler):
 
 
 def s3_access_is_valid(handler) -> bool:
-    return auth_required(handler) or api_token_is_valid(handler)
+    return auth_required(handler)
+
+
+def s3_admin_required_response(handler):
+    return error_response(
+        handler,
+        'S3 admin authentication required',
+        HTTPStatus.UNAUTHORIZED,
+        code='s3_admin_auth_required',
+    )
 
 
 def parse_positive_int(value, default, minimum=1, maximum=None):
@@ -1448,8 +1629,35 @@ def to_money(value, default='0.00'):
         return default
 
 
+def _strip_accents(value: str) -> str:
+    """Return the input string with Unicode accents/diacritics removed (NFKD)."""
+    if value is None:
+        return ''
+    normalized = unicodedata.normalize('NFKD', str(value))
+    return ''.join(ch for ch in normalized if not unicodedata.combining(ch))
+
+
+def _normalize_search_text(value: str) -> str:
+    """Normalize text for accent-insensitive, case-insensitive comparisons.
+
+    Steps: coerce to str, NFKD normalize and strip combining marks, lowercase, strip whitespace.
+    """
+    if value is None:
+        return ''
+    return _strip_accents(str(value)).lower().strip()
+
+
+def _sql_unaccent(value):
+    # SQLite will call this with None for NULL values; return empty string in that case
+    try:
+        return _normalize_search_text(value or '')
+    except Exception:
+        return ''
+
+
 def make_slug(value):
-    text = (value or '').strip().lower()
+    # Produce a stable slug that strips accents and normalizes to ASCII-like characters
+    text = _strip_accents((value or '').strip()).lower()
     text = ''.join(ch if ch.isalnum() else '-' for ch in text)
     while '--' in text:
         text = text.replace('--', '-')
@@ -1558,39 +1766,51 @@ def _load_s3_jobs_from_db() -> list[dict]:
 
 
 def _save_s3_jobs_to_db(jobs: list[dict]) -> None:
-    conn = db_connect()
-    try:
-        seen = set()
-        now = time.time()
-        for raw_job in jobs:
-            if not isinstance(raw_job, dict) or not raw_job.get('job_id'):
-                continue
-            job_id = str(raw_job.get('job_id'))
-            seen.add(job_id)
-            conn.execute(
-                '''
-                INSERT INTO s3_jobs (job_id, payload_json, started_at, updated_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(job_id) DO UPDATE SET
-                    payload_json = excluded.payload_json,
-                    started_at = excluded.started_at,
-                    updated_at = excluded.updated_at
-                ''',
-                (
-                    job_id,
-                    json.dumps(raw_job, ensure_ascii=False, separators=(',', ':')),
-                    float(raw_job.get('started_at') or now),
-                    now,
-                ),
-            )
-        if seen:
-            placeholders = ','.join('?' for _ in seen)
-            conn.execute(f'DELETE FROM s3_jobs WHERE job_id NOT IN ({placeholders})', tuple(seen))
-        else:
-            conn.execute('DELETE FROM s3_jobs')
-        conn.commit()
-    finally:
-        conn.close()
+    attempts = 5
+    last_exc = None
+    for attempt in range(attempts):
+        conn = db_connect()
+        try:
+            seen = set()
+            now = time.time()
+            for raw_job in jobs:
+                if not isinstance(raw_job, dict) or not raw_job.get('job_id'):
+                    continue
+                job_id = str(raw_job.get('job_id'))
+                seen.add(job_id)
+                conn.execute(
+                    '''
+                    INSERT INTO s3_jobs (job_id, payload_json, started_at, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(job_id) DO UPDATE SET
+                        payload_json = excluded.payload_json,
+                        started_at = excluded.started_at,
+                        updated_at = excluded.updated_at
+                    ''',
+                    (
+                        job_id,
+                        json.dumps(raw_job, ensure_ascii=False, separators=(',', ':')),
+                        float(raw_job.get('started_at') or now),
+                        now,
+                    ),
+                )
+            if seen:
+                placeholders = ','.join('?' for _ in seen)
+                conn.execute(f'DELETE FROM s3_jobs WHERE job_id NOT IN ({placeholders})', tuple(seen))
+            else:
+                conn.execute('DELETE FROM s3_jobs')
+            conn.commit()
+            return
+        except sqlite3.OperationalError as exc:
+            last_exc = exc
+            message = str(exc).lower()
+            if 'database is locked' not in message or attempt == attempts - 1:
+                raise
+            time.sleep(0.15 * (attempt + 1))
+        finally:
+            conn.close()
+    if last_exc:
+        raise last_exc
 
 
 S3_JOB_MANAGER = S3JobManager(load_jobs_fn=_load_s3_jobs_from_db, save_jobs_fn=_save_s3_jobs_to_db)
@@ -1637,12 +1857,14 @@ class Handler(SimpleHTTPRequestHandler):
                 return html_response(self, content)
             if parsed.path == '/api/s3/auth-check':
                 return json_response(self, {'data': {'authenticated': auth_required(self)}})
+            if parsed.path == '/api/s3/migration-summary' and not s3_access_is_valid(self):
+                return s3_admin_required_response(self)
             if parsed.path == '/api/s3/config' and not s3_access_is_valid(self):
-                return error_response(self, 'Authentication required', HTTPStatus.UNAUTHORIZED, code='unauthorized')
+                return s3_admin_required_response(self)
             if parsed.path == '/api/s3/jobs' and not s3_access_is_valid(self):
-                return error_response(self, 'Authentication required', HTTPStatus.UNAUTHORIZED, code='unauthorized')
+                return s3_admin_required_response(self)
             if parsed.path.startswith('/api/s3/jobs/') and not s3_access_is_valid(self):
-                return error_response(self, 'Authentication required', HTTPStatus.UNAUTHORIZED, code='unauthorized')
+                return s3_admin_required_response(self)
             if parsed.path == '/api/s3/auth':
                 return self.handle_s3_auth()
             if parsed.path == '/api/datasets':
@@ -1662,6 +1884,8 @@ class Handler(SimpleHTTPRequestHandler):
             if parsed.path.startswith('/api/s3/jobs/'):
                 job_id = parsed.path.split('/api/s3/jobs/', 1)[1].strip('/')
                 return self.handle_s3_job_detail(job_id)
+            if parsed.path == '/api/s3/migration-summary':
+                return self.handle_s3_migration_summary()
             if parsed.path == '/api/s3/config':
                 return self.handle_s3_config_get()
             return super().do_GET()
@@ -1676,17 +1900,37 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         try:
-            if parsed.path.startswith('/api/') and not api_token_is_valid(self):
-                return api_unauthorized_response(self)
-            if parsed.path == '/api/s3/jobs':
-                return self.handle_s3_jobs_create()
             if parsed.path == '/api/s3/auth':
+                if not api_token_is_valid(self):
+                    return api_unauthorized_response(self)
                 return self.handle_s3_auth()
+            if parsed.path == '/api/s3/jobs':
+                if not api_token_is_valid(self):
+                    return api_unauthorized_response(self)
+                if not s3_access_is_valid(self):
+                    return s3_admin_required_response(self)
+                return self.handle_s3_jobs_create()
+            if parsed.path == '/api/s3/migration-jobs':
+                if not api_token_is_valid(self):
+                    return api_unauthorized_response(self)
+                if not s3_access_is_valid(self):
+                    return s3_admin_required_response(self)
+                return self.handle_s3_migration_job_create()
             if parsed.path.startswith('/api/s3/jobs/') and parsed.path.endswith('/cancel'):
+                if not api_token_is_valid(self):
+                    return api_unauthorized_response(self)
+                if not s3_access_is_valid(self):
+                    return s3_admin_required_response(self)
                 job_id = parsed.path.split('/api/s3/jobs/', 1)[1].rsplit('/cancel', 1)[0].strip('/')
                 return self.handle_s3_job_cancel(job_id)
             if parsed.path == '/api/s3/config':
+                if not api_token_is_valid(self):
+                    return api_unauthorized_response(self)
+                if not s3_access_is_valid(self):
+                    return s3_admin_required_response(self)
                 return self.handle_s3_config_update()
+            if parsed.path.startswith('/api/') and not api_token_is_valid(self):
+                return api_unauthorized_response(self)
             return error_response(self, 'Not found', HTTPStatus.NOT_FOUND, code='not_found')
         except sqlite3.Error as exc:
             return error_response(self, f'Database error: {exc}', HTTPStatus.INTERNAL_SERVER_ERROR, code='database_error')
@@ -1711,9 +1955,8 @@ class Handler(SimpleHTTPRequestHandler):
             raise ValueError(f'Dataset not found: {dataset_id}')
         return row
 
-    def _category_rows(self, conn, dataset_id):
-        return conn.execute(
-            '''
+    def _category_rows(self, conn, dataset_id, search: str | None = None):
+        sql = '''
             SELECT
                 p.category AS name,
                 COUNT(*) AS count,
@@ -1721,11 +1964,19 @@ class Handler(SimpleHTTPRequestHandler):
                 MAX(CASE WHEN p.url <> '' THEN p.url ELSE NULL END) AS source_url
             FROM products p
             WHERE p.dataset_id = ? AND COALESCE(p.category, '') <> ''
+        '''
+        params = [dataset_id]
+        if search:
+            # Use the SQL-accessible unaccent() function and normalized parameter to make
+            # category searches both case-insensitive and accent-insensitive.
+            sql += " AND (unaccent(p.category) LIKE ? OR unaccent(p.category_path) LIKE ?)"
+            ns = _normalize_search_text(search)
+            params.extend([f'%{ns}%', f'%{ns}%'])
+        sql += '''
             GROUP BY p.category
             ORDER BY count DESC, p.category COLLATE NOCASE ASC
-            ''',
-            (dataset_id,),
-        ).fetchall()
+            '''
+        return conn.execute(sql, params).fetchall()
 
     def _category_resource(self, row):
         name = (row['name'] or '').strip()
@@ -1942,9 +2193,10 @@ class Handler(SimpleHTTPRequestHandler):
             raise ValueError(f'Unknown dataset: {dataset_id}')
         page = parse_positive_int(params.get('page', ['1'])[0], 1)
         page_size = parse_positive_int(params.get('pageSize', ['100'])[0], 100, maximum=MAX_PAGE_SIZE)
+        search = (params.get('search', [''])[0] or '').strip()
         conn = db_connect()
         dataset_row = self._dataset_row(conn, dataset_id)
-        rows = self._category_rows(conn, dataset_id)
+        rows = self._category_rows(conn, dataset_id, search)
         conn.close()
         total = len(rows)
         total_pages = max(1, math.ceil(total / page_size))
@@ -1996,8 +2248,10 @@ class Handler(SimpleHTTPRequestHandler):
             where.append('p.search_text LIKE ?')
             values.append(f'%{search}%')
         if category:
-            where.append('(p.category LIKE ? OR p.category_path LIKE ?)')
-            values.extend([f'%{category}%', f'%{category}%'])
+            # Match categories using normalized comparison (strip accents + lowercase)
+            where.append('(unaccent(p.category) LIKE ? OR unaccent(p.category_path) LIKE ?)')
+            nc = _normalize_search_text(category)
+            values.extend([f'%{nc}%', f'%{nc}%'])
         if images_only:
             where.append("p.image <> ''")
         if saved_on_s3_only:
@@ -2059,7 +2313,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def handle_s3_auth(self):
         payload = self._read_json_body()
-        if not S3_PASSWORD:
+        if not S3_ADMIN_PASSWORD:
             token = issue_s3_token()
             body = json.dumps({'data': {'authenticated': True, 'expires_in_seconds': S3_AUTH_TTL_SECONDS}}, ensure_ascii=False).encode('utf-8')
             self.send_response(HTTPStatus.OK)
@@ -2072,8 +2326,8 @@ class Handler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
         password = str(payload.get('password') or '')
-        if not hmac.compare_digest(hash_password(password), hash_password(S3_PASSWORD)):
-            return error_response(self, 'Invalid password', HTTPStatus.UNAUTHORIZED, code='unauthorized')
+        if not hmac.compare_digest(hash_password(password), hash_password(S3_ADMIN_PASSWORD)):
+            return error_response(self, 'Invalid S3 admin password', HTTPStatus.UNAUTHORIZED, code='unauthorized')
         token = issue_s3_token()
         body = json.dumps({'data': {'authenticated': True, 'expires_in_seconds': S3_AUTH_TTL_SECONDS}}, ensure_ascii=False).encode('utf-8')
         self.send_response(HTTPStatus.OK)
@@ -2092,9 +2346,11 @@ class Handler(SimpleHTTPRequestHandler):
         config.pop('aws_secret_access_key', None)
         config.pop('aws_session_token', None)
         if not config.get('bucket'):
-            config['bucket'] = _env_nonempty('S3_BUCKET')
+            config['bucket'] = resolve_aws_bucket()
         if not config.get('endpoint_url'):
-            config['endpoint_url'] = _env_nonempty('S3_ENDPOINT_URL')
+            config['endpoint_url'] = resolve_aws_endpoint_url()
+        if not config.get('public_url'):
+            config['public_url'] = resolve_aws_public_url()
         config['region_name'] = resolve_s3_region(config.get('endpoint_url'), config.get('region_name'))
         json_response(self, {'data': config})
 
@@ -2104,7 +2360,7 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             load_s3_state(conn=conn, force=True)
             config = S3_STATE.setdefault('config', {})
-            for key in ['region_name', 'bucket', 'prefix', 'endpoint_url']:
+            for key in ['region_name', 'bucket', 'prefix', 'endpoint_url', 'public_url']:
                 if key in payload:
                     config[key] = payload[key]
             for secret_key in ('aws_access_key_id', 'aws_secret_access_key', 'aws_session_token'):
@@ -2121,9 +2377,11 @@ class Handler(SimpleHTTPRequestHandler):
         config.pop('aws_secret_access_key', None)
         config.pop('aws_session_token', None)
         if not config.get('bucket'):
-            config['bucket'] = _env_nonempty('S3_BUCKET')
+            config['bucket'] = resolve_aws_bucket()
         if not config.get('endpoint_url'):
-            config['endpoint_url'] = _env_nonempty('S3_ENDPOINT_URL')
+            config['endpoint_url'] = resolve_aws_endpoint_url()
+        if not config.get('public_url'):
+            config['public_url'] = resolve_aws_public_url()
         config['region_name'] = resolve_s3_region(config.get('endpoint_url'), config.get('region_name'))
         json_response(self, {'data': S3_JOB_MANAGER.list_jobs(), 'config': config})
 
@@ -2135,8 +2393,8 @@ class Handler(SimpleHTTPRequestHandler):
         concurrency = parse_positive_int(payload.get('concurrency', 4), 4, maximum=24)
         if dataset_id == 'asos':
             concurrency = min(concurrency, 2)
-        bucket = (payload.get('bucket') or S3_STATE.get('config', {}).get('bucket') or _env_nonempty('S3_BUCKET') or '').strip()
-        prefix = (payload.get('prefix') or S3_STATE.get('config', {}).get('prefix') or '').strip()
+        bucket = (payload.get('bucket') or S3_STATE.get('config', {}).get('bucket') or resolve_aws_bucket() or '').strip()
+        prefix = (payload.get('prefix') or S3_STATE.get('config', {}).get('prefix') or resolve_aws_prefix() or '').strip()
         if dataset_id not in ALLOWED_DATASETS:
             raise ValueError(f'Unknown dataset: {dataset_id}')
         if not bucket:
@@ -2147,9 +2405,11 @@ class Handler(SimpleHTTPRequestHandler):
         job_id = f'{dataset_id}-{int(time.time())}'
         load_s3_state(conn=conn, force=True)
         config = dict(S3_STATE.get('config', {}))
-        config.update({k: v for k, v in payload.items() if k in {'region_name', 'endpoint_url'}})
+        config.update({k: v for k, v in payload.items() if k in {'region_name', 'endpoint_url', 'public_url'}})
         if not config.get('endpoint_url'):
-            config['endpoint_url'] = _env_nonempty('S3_ENDPOINT_URL')
+            config['endpoint_url'] = resolve_aws_endpoint_url()
+        if not config.get('public_url'):
+            config['public_url'] = resolve_aws_public_url()
         config['region_name'] = resolve_s3_region(config.get('endpoint_url'), config.get('region_name'))
         config['bucket'] = bucket
         config['prefix'] = prefix
@@ -2201,16 +2461,21 @@ class Handler(SimpleHTTPRequestHandler):
                 goods_id = normalize_goods_id(dataset_id, row.get('id'))
                 source_urls = [str(url).strip() for url in (item.get('source_urls') or []) if isinstance(url, str) and str(url).strip()]
                 image_pairs = []
+                # convert s3:// URLs to public URLs according to current config
+                cfg = S3_STATE.get('config', {}) or {}
+                ep = cfg.get('endpoint_url')
+                rg = cfg.get('region_name')
                 for pair in item.get('image_pairs') or []:
                     if not isinstance(pair, dict):
                         continue
                     source_url = str(pair.get('source_url') or '').strip()
-                    s3_url = str(pair.get('s3_url') or '').strip()
-                    if not source_url or not s3_url:
+                    raw_s3_url = str(pair.get('s3_url') or '').strip()
+                    if not source_url or not raw_s3_url:
                         continue
+                    public_s3 = s3_to_public_url(raw_s3_url, ep, rg)
                     image_pairs.append({
                         'source_url': source_url,
-                        's3_url': s3_url,
+                        's3_url': public_s3,
                         'key': pair.get('key'),
                         'status': pair.get('status'),
                     })
@@ -2252,6 +2517,117 @@ class Handler(SimpleHTTPRequestHandler):
         )
         json_response(self, {'data': S3_JOB_MANAGER.get_job(job_id), 'future': bool(future)}, status=HTTPStatus.ACCEPTED)
 
+    def handle_s3_migration_summary(self):
+        public_url = resolve_aws_public_url().strip()
+        if not public_url:
+            raise ValueError('Missing AWS_URL')
+        conn = db_connect()
+        try:
+            changes = migrate_collect_changes(conn, public_url)
+        finally:
+            conn.close()
+        sample_limit = 10
+        json_response(self, {
+            'data': {
+                'total': len(changes),
+                'sample_limit': sample_limit,
+                'public_url': public_url,
+                'sample': [
+                    {
+                        'goods_id': change['goods_id'],
+                        'old_s3_url': change['old_s3_url'],
+                        'new_s3_url': change['new_s3_url'],
+                        'changed_fields': change['changed_fields'],
+                    }
+                    for change in changes[:sample_limit]
+                ],
+            }
+        })
+
+    def handle_s3_migration_job_create(self):
+        payload = self._read_json_body()
+        preview = bool(payload.get('preview', False))
+        sample_limit = parse_positive_int(payload.get('sample_limit', 25), 25, maximum=200)
+        public_url = resolve_aws_public_url().strip()
+        if not public_url:
+            raise ValueError('Missing AWS_URL')
+
+        conn = db_connect()
+        try:
+            changes = migrate_collect_changes(conn, public_url)
+        finally:
+            conn.close()
+
+        job_id = f"migration-{int(time.time())}"
+
+        def runner(record_item, cancel_event):
+            run_conn = db_connect()
+            try:
+                run_conn.row_factory = sqlite3.Row
+                local_changes = migrate_collect_changes(run_conn, public_url)
+                if preview:
+                    for change in local_changes[:sample_limit]:
+                        if cancel_event.is_set():
+                            break
+                        record_item({
+                            'status': 'skipped',
+                            'message': 'Preview migration item',
+                            'timestamp': time.time(),
+                            'goods_id': change['goods_id'],
+                            'kind': 'migration_preview',
+                            'old_s3_url': change['old_s3_url'],
+                            'new_s3_url': change['new_s3_url'],
+                            'changed_fields': change['changed_fields'],
+                        })
+                    return
+
+                backup_path = ROOT / f"s3_objects_backup_{int(time.time())}.json"
+                migrate_write_backup(run_conn, backup_path)
+
+                now = time.time()
+                for change in local_changes:
+                    if cancel_event.is_set():
+                        raise RuntimeError('Migration cancelled')
+                    run_conn.execute(
+                        "UPDATE s3_objects SET s3_url = ?, s3_image_urls_json = ?, image_pairs_json = ?, updated_at = ? WHERE goods_id = ?",
+                        (
+                            change['new_s3_url'],
+                            json.dumps(change['new_urls'], ensure_ascii=False),
+                            json.dumps(change['new_pairs'], ensure_ascii=False),
+                            now,
+                            change['goods_id'],
+                        ),
+                    )
+                    run_conn.commit()
+                    record_item({
+                        'status': 'uploaded',
+                        'message': 'Migrated stored URLs to AWS_URL',
+                        'timestamp': time.time(),
+                        'goods_id': change['goods_id'],
+                        'kind': 'migration',
+                        'old_s3_url': change['old_s3_url'],
+                        'new_s3_url': change['new_s3_url'],
+                        'changed_fields': change['changed_fields'],
+                        'backup_path': str(backup_path),
+                    })
+                load_s3_state(force=True)
+            finally:
+                run_conn.close()
+
+        future = S3_JOB_MANAGER.start_custom_job(
+            job_id=job_id,
+            dataset_id='all',
+            source='migration',
+            kind='migration_preview' if preview else 'migration',
+            total=min(len(changes), sample_limit) if preview else len(changes),
+            runner=runner,
+            bucket=resolve_aws_bucket() or None,
+            prefix=resolve_aws_prefix() or '',
+            concurrency=1,
+            limit=min(len(changes), sample_limit) if preview else len(changes),
+        )
+        json_response(self, {'data': S3_JOB_MANAGER.get_job(job_id), 'future': bool(future)}, status=HTTPStatus.ACCEPTED)
+
     def handle_s3_job_cancel(self, job_id):
         if not S3_JOB_MANAGER.cancel_job(job_id):
             return error_response(self, f'Job not found: {job_id}', HTTPStatus.NOT_FOUND, code='not_found')
@@ -2262,6 +2638,7 @@ class Handler(SimpleHTTPRequestHandler):
         job = S3_JOB_MANAGER.get_job(job_id)
         if not job:
             return error_response(self, f'Job not found: {job_id}', HTTPStatus.NOT_FOUND, code='not_found')
+        job = _publicize_job_payload(job)
         query = parse_qs(urlparse(self.path).query)
         page = parse_positive_int((query.get('page') or ['1'])[0], 1)
         page_size = parse_positive_int((query.get('page_size') or ['12'])[0], 12, maximum=50)

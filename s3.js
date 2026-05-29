@@ -15,6 +15,9 @@ const els = {
   startS3JobBtn: document.getElementById('startS3JobBtn'),
   stopS3JobBtn: document.getElementById('stopS3JobBtn'),
   refreshS3JobsBtn: document.getElementById('refreshS3JobsBtn'),
+  previewMigrationBtn: document.getElementById('previewMigrationBtn'),
+  startMigrationBtn: document.getElementById('startMigrationBtn'),
+  migrationHint: document.getElementById('migrationHint'),
   s3JobsList: document.getElementById('s3JobsList'),
   s3ConfigHint: document.getElementById('s3ConfigHint'),
   activeJobsCount: document.getElementById('activeJobsCount'),
@@ -102,6 +105,8 @@ function bindEvents() {
   els.startS3JobBtn.addEventListener('click', startS3Job);
   els.stopS3JobBtn.addEventListener('click', stopActiveS3Job);
   els.refreshS3JobsBtn.addEventListener('click', refreshS3Jobs);
+  els.previewMigrationBtn.addEventListener('click', previewMigration);
+  els.startMigrationBtn.addEventListener('click', startMigration);
   els.jobModalCloseBtn.addEventListener('click', closeJobModal);
   els.jobModalCancelBtn.addEventListener('click', cancelSelectedJob);
   els.jobModalPrev.addEventListener('click', () => {
@@ -173,12 +178,12 @@ async function unlockPage() {
   const payload = await response.json().catch(() => ({}));
   if (response.status === 401 && payload?.error?.code === 'unauthorized' && !password) {
     els.authStateLabel.textContent = 'API verrouillée';
-    els.authHint.textContent = 'Le token API Bearer est requis avant le mot de passe S3.';
+    els.authHint.textContent = 'Le token API Bearer est requis avant le mot de passe admin S3.';
     return;
   }
   if (!response.ok) {
     els.authStateLabel.textContent = 'Verrouillé';
-    els.authHint.textContent = payload?.error?.message || 'Mot de passe invalide';
+    els.authHint.textContent = payload?.error?.message || 'Mot de passe admin S3 invalide';
     return;
   }
   state.unlocked = true;
@@ -241,6 +246,14 @@ async function refreshS3Jobs() {
   els.activeJobsCount.textContent = String(active.length);
   els.s3ConfigState.textContent = nextConfig.bucket || '—';
   els.s3ConfigHint.textContent = nextConfig.bucket ? `Bucket configuré: ${nextConfig.bucket}` : 'Configure ton bucket ici, puis lance un job.';
+  if (els.migrationHint) {
+    const latestMigration = state.s3Jobs.find((job) => String(job.kind || '').startsWith('migration'));
+    if (latestMigration) {
+      els.migrationHint.textContent = `Dernière migration: ${latestMigration.status} · ${latestMigration.processed || 0}/${latestMigration.total || 0}`;
+    } else {
+      els.migrationHint.textContent = 'AWS_URL sera utilisé pour réécrire les anciennes URLs stockées.';
+    }
+  }
 }
 
 function renderS3Jobs(jobs) {
@@ -248,21 +261,26 @@ function renderS3Jobs(jobs) {
     els.s3JobsList.innerHTML = '<div class="s3-job-empty">Aucun job S3 pour le moment.</div>';
     return;
   }
-  els.s3JobsList.innerHTML = jobs.map((job) => `
+  els.s3JobsList.innerHTML = jobs.map((job) => {
+    const isMigration = String(job.kind || '').startsWith('migration');
+    return `
     <article class="s3-job-card${state.selectedJobId === job.job_id ? ' is-selected' : ''}" data-job-id="${escapeHtml(job.job_id)}" role="button" tabindex="0">
       <div class="s3-job-header">
         <strong>${escapeHtml(job.job_id)}</strong>
-        <span class="job-pill job-${escapeHtml(job.status || 'queued')}">${escapeHtml(job.status || 'queued')}</span>
+        <div class="s3-job-header-pills">
+          ${isMigration ? '<span class="job-pill job-migration">migration</span>' : ''}
+          <span class="job-pill job-${escapeHtml(job.status || 'queued')}">${escapeHtml(job.status || 'queued')}</span>
+        </div>
       </div>
       <div class="s3-job-meta">
         <span>${escapeHtml(job.dataset_id || '')}</span>
         <span>${job.processed || 0}/${job.total || 0} traités</span>
-        <span>Uploadés: ${job.uploaded || 0}</span>
+        <span>${isMigration ? 'Modifiés' : 'Uploadés'}: ${job.uploaded || 0}</span>
         <span>Ignorés: ${job.skipped || 0}</span>
         <span>Erreurs: ${job.failed || 0}</span>
       </div>
     </article>
-  `).join('');
+  `;}).join('');
 
   els.s3JobsList.querySelectorAll('.s3-job-card').forEach((card) => {
     const open = () => {
@@ -392,12 +410,14 @@ function renderJobDetailsModal(detail) {
 
   els.jobModalTitle.textContent = job.job_id || 'Job';
   els.jobModalStatus.textContent = job.status || 'queued';
+  const isMigrationJob = String(job.kind || '').startsWith('migration');
   els.jobModalSummary.innerHTML = `
     <div class="s3-job-kpi"><span>Traités</span><strong>${job.processed || 0}/${job.total || 0}</strong></div>
-    <div class="s3-job-kpi"><span>Réussis</span><strong>${job.uploaded || 0}</strong></div>
+    <div class="s3-job-kpi"><span>${isMigrationJob ? 'Modifiés / Preview' : 'Réussis'}</span><strong>${job.uploaded || 0}</strong></div>
     <div class="s3-job-kpi"><span>Ignorés / Erreurs</span><strong>${(job.skipped || 0)} / ${(job.failed || 0)}</strong></div>
   `;
   els.jobModalConfig.innerHTML = `
+    <div><span>Type</span><strong>${escapeHtml(job.kind || 'upload')}</strong></div>
     <div><span>Dataset</span><strong>${escapeHtml(job.dataset_id || '—')}</strong></div>
     <div><span>Bucket</span><strong>${escapeHtml(job.bucket || '—')}</strong></div>
     <div><span>Prefix</span><strong>${escapeHtml(job.prefix || '—')}</strong></div>
@@ -448,6 +468,10 @@ function renderJobDetailsModal(detail) {
       </div>
       <div class="s3-job-item-alert is-${tone}">${escapeHtml(note)}</div>
       <div class="s3-job-item-message is-${tone}">${escapeHtml(message)}</div>
+      ${item.old_s3_url ? `<div class="s3-job-item-message"><strong>Ancienne URL:</strong> ${escapeHtml(item.old_s3_url)}</div>` : ''}
+      ${item.new_s3_url ? `<div class="s3-job-item-message"><strong>Nouvelle URL:</strong> ${escapeHtml(item.new_s3_url)}</div>` : ''}
+      ${Array.isArray(item.changed_fields) && item.changed_fields.length ? `<div class="s3-job-item-message"><strong>Champs:</strong> ${escapeHtml(item.changed_fields.join(', '))}</div>` : ''}
+      ${item.backup_path ? `<div class="s3-job-item-message"><strong>Backup:</strong> ${escapeHtml(item.backup_path)}</div>` : ''}
       ${item.source_url ? `<div class="s3-job-item-message"><a href="${escapeHtml(item.source_url)}" target="_blank" rel="noreferrer">Ouvrir la source</a></div>` : ''}
     </article>
   `;}).join('');
@@ -576,6 +600,54 @@ async function cancelSelectedJob() {
   } finally {
     state.isCancellingJobs = false;
     syncCancelButtons();
+  }
+}
+
+async function fetchMigrationSummary() {
+  const response = await fetch('/api/s3/migration-summary', {
+    credentials: 'include',
+    headers: getApiHeaders(),
+  });
+  if (!response.ok) throw new Error(`Impossible de charger le résumé de migration (${response.status})`);
+  const payload = await response.json();
+  return payload?.data || { total: 0, sample_limit: 10, sample: [], public_url: '' };
+}
+
+async function previewMigration() {
+  els.migrationHint.textContent = 'Prévisualisation en cours…';
+  const summary = await fetchMigrationSummary();
+  const response = await fetch('/api/s3/migration-jobs', {
+    method: 'POST',
+    credentials: 'include',
+    headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ preview: true, sample_limit: 25 }),
+  });
+  if (!response.ok) throw new Error(`Impossible de lancer le preview de migration (${response.status})`);
+  const payload = await response.json();
+  els.migrationHint.textContent = `Preview lancé · ${summary.total} item(s) impacté(s).`;
+  await refreshS3Jobs();
+  if (payload?.data?.job_id) {
+    await openJobDetails(payload.data.job_id, 1);
+  }
+}
+
+async function startMigration() {
+  const summary = await fetchMigrationSummary();
+  const confirmed = window.confirm(`Lancer la migration des URLs stockées ? ${summary.total} item(s) seront impacté(s). Un backup JSON sera créé avant écriture.`);
+  if (!confirmed) return;
+  els.migrationHint.textContent = `Migration en cours… ${summary.total} item(s) à traiter.`;
+  const response = await fetch('/api/s3/migration-jobs', {
+    method: 'POST',
+    credentials: 'include',
+    headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ preview: false }),
+  });
+  if (!response.ok) throw new Error(`Impossible de lancer la migration (${response.status})`);
+  const payload = await response.json();
+  els.migrationHint.textContent = `Migration lancée · ${summary.total} item(s) visé(s).`;
+  await refreshS3Jobs();
+  if (payload?.data?.job_id) {
+    await openJobDetails(payload.data.job_id, 1);
   }
 }
 
