@@ -31,7 +31,7 @@ body {
 }
 
 body {
-  padding: 32px 20px 60px;
+  padding: 18px 20px 60px;
 }
 
 body::before {
@@ -197,6 +197,43 @@ button:focus {
   border-radius: var(--radius);
   background: linear-gradient(135deg, rgba(15, 23, 42, 0.9), rgba(10, 15, 28, 0.78));
   box-shadow: var(--shadow);
+}
+
+.auth-gate {
+  margin-bottom: 16px;
+}
+
+.auth-gate .primary-btn,
+.auth-gate .secondary-btn {
+  min-height: 48px;
+}
+
+.s3-panel-header-sticky {
+  position: sticky;
+  top: 92px;
+  z-index: 20;
+}
+
+.s3-split-layout {
+  display: grid;
+  gap: 16px;
+}
+
+.page-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+body.is-busy {
+  cursor: progress;
+}
+
+button[disabled],
+input[disabled],
+select[disabled] {
+  filter: saturate(0.7);
 }
 
 .dashboard-nav-meta {

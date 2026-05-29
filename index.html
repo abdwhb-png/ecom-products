@@ -4,7 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Fast Fashion Dashboard</title>
-    <link rel="stylesheet" href="./styles.css?v=20260523-1" />
+    <link rel="stylesheet" href="./shared-ui.css?v=20260529-2" />
+    <link rel="stylesheet" href="./styles.css?v=20260529-2" />
   </head>
   <body>
     <div class="app-shell">
@@ -32,6 +33,24 @@
           </div>
         </div>
       </header>
+
+      <section id="authGate" class="auth-gate hidden">
+        <h2>API protégée</h2>
+        <p>Entre le token d’autorisation pour accéder au dashboard et à l’API.</p>
+        <form id="apiAuthForm" class="auth-form">
+          <label class="field-group" for="apiTokenInput">
+            <span>Token Bearer</span>
+            <div class="secret-field">
+              <input id="apiTokenInput" name="api_token" type="password" placeholder="Token Bearer" autocomplete="current-password" />
+              <button id="apiTokenToggleBtn" class="secondary-btn secret-toggle" type="button" aria-pressed="false">Afficher</button>
+            </div>
+          </label>
+          <div class="s3-actions-inline">
+            <button id="unlockApiBtn" class="primary-btn" type="submit">Déverrouiller</button>
+          </div>
+        </form>
+        <p id="apiAuthHint" class="muted small"></p>
+      </section>
 
       <section class="controls-panel">
         <div class="field-group field-group-large">
@@ -88,33 +107,6 @@
           </label>
           <button id="resetFiltersBtn" class="secondary-btn" type="button">Réinitialiser</button>
         </div>
-      </section>
-
-      <nav class="dashboard-nav" aria-label="Navigation rapide">
-        <div class="dashboard-nav-meta">
-          <span class="nav-kicker">Navigation</span>
-          <span class="nav-caption">Accès direct aux surfaces de support</span>
-        </div>
-        <div class="dashboard-nav-links">
-          <a class="nav-card nav-card-primary" href="/docs">
-            <strong>Docs API</strong>
-            <span>Endpoints, schémas et exemples</span>
-          </a>
-          <a class="nav-card" href="/s3">
-            <strong>S3 control</strong>
-            <span>Jobs, auth et uploads en arrière-plan</span>
-          </a>
-        </div>
-      </nav>
-
-      <section id="authGate" class="auth-gate hidden">
-        <h2>API protégée</h2>
-        <p>Entre le token d’autorisation pour accéder au dashboard et à l’API.</p>
-        <div class="auth-row">
-          <input id="apiTokenInput" type="password" placeholder="Token Bearer" autocomplete="off" />
-          <button id="unlockApiBtn" class="primary-btn" type="button">Déverrouiller</button>
-        </div>
-        <p id="apiAuthHint" class="muted small"></p>
       </section>
 
       <section id="statusBanner" class="status-banner info">Chargement du dashboard…</section>
@@ -230,6 +222,7 @@
       </div>
     </div>
 
-    <script src="./app.js?v=20260523-1"></script>
+    <script src="./shared-ui.js?v=20260529-2"></script>
+    <script src="./app.js?v=20260529-2"></script>
   </body>
 </html>

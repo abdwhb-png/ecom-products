@@ -3,10 +3,16 @@ const API_TOKEN_STORAGE_KEY = 'fast-fashion-api-token';
 const els = {
   authGate: document.getElementById('authGate'),
   authStateLabel: document.getElementById('authStateLabel'),
+  s3AuthForm: document.getElementById('s3AuthForm'),
   passwordInput: document.getElementById('passwordInput'),
+  passwordToggleBtn: document.getElementById('passwordToggleBtn'),
   unlockBtn: document.getElementById('unlockBtn'),
   authHint: document.getElementById('authHint'),
   s3Workspace: document.getElementById('s3Workspace'),
+  uploadTabBtn: document.getElementById('uploadTabBtn'),
+  migrationTabBtn: document.getElementById('migrationTabBtn'),
+  uploadJobsList: document.getElementById('uploadJobsList'),
+  migrationJobsList: document.getElementById('migrationJobsList'),
   s3DatasetSelect: document.getElementById('s3DatasetSelect'),
   s3BucketInput: document.getElementById('s3BucketInput'),
   s3PrefixInput: document.getElementById('s3PrefixInput'),
@@ -18,7 +24,6 @@ const els = {
   previewMigrationBtn: document.getElementById('previewMigrationBtn'),
   startMigrationBtn: document.getElementById('startMigrationBtn'),
   migrationHint: document.getElementById('migrationHint'),
-  s3JobsList: document.getElementById('s3JobsList'),
   s3ConfigHint: document.getElementById('s3ConfigHint'),
   activeJobsCount: document.getElementById('activeJobsCount'),
   s3ConfigState: document.getElementById('s3ConfigState'),
@@ -40,6 +45,7 @@ const els = {
 const state = {
   apiToken: '',
   isCancellingJobs: false,
+  isSubmitting: false,
   datasets: [],
   s3Jobs: [],
   unlocked: false,
@@ -83,6 +89,13 @@ function formatDuration(startedAt, endedAt) {
 }
 
 async function init() {
+  renderGlobalNav('s3');
+  initPasswordFieldToggle({ input: els.passwordInput, button: els.passwordToggleBtn, hiddenLabel: 'Afficher', shownLabel: 'Masquer' });
+  initTabs({
+    buttons: [els.uploadTabBtn, els.migrationTabBtn],
+    panels: Array.from(document.querySelectorAll('[data-tab-panel]')),
+    active: 'upload',
+  });
   bindEvents();
   hydrateApiToken();
   await loadDatasets();
@@ -92,9 +105,9 @@ async function init() {
 }
 
 function bindEvents() {
-  els.unlockBtn.addEventListener('click', unlockPage);
-  els.passwordInput.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') unlockPage();
+  els.s3AuthForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    await unlockPage();
   });
   els.s3BucketInput.addEventListener('input', () => {
     state.formDraft.bucket = els.s3BucketInput.value.trim() !== (state.serverConfig.bucket || '');
@@ -110,13 +123,13 @@ function bindEvents() {
   els.jobModalCloseBtn.addEventListener('click', closeJobModal);
   els.jobModalCancelBtn.addEventListener('click', cancelSelectedJob);
   els.jobModalPrev.addEventListener('click', () => {
-    if (state.selectedJobId && state.detailPage > 1) {
+    if (state.selectedJobId && state.detailPage > 1 && !state.isSubmitting) {
       openJobDetails(state.selectedJobId, state.detailPage - 1);
     }
   });
   els.jobModalNext.addEventListener('click', () => {
     const totalPages = state.selectedJobDetail?.total_pages || 1;
-    if (state.selectedJobId && state.detailPage < totalPages) {
+    if (state.selectedJobId && state.detailPage < totalPages && !state.isSubmitting) {
       openJobDetails(state.selectedJobId, state.detailPage + 1);
     }
   });
@@ -138,6 +151,30 @@ function getApiHeaders(extraHeaders = {}) {
     headers.Authorization = `Bearer ${state.apiToken}`;
   }
   return headers;
+}
+
+function setS3Busy(isBusy, { button = null, loadingText = 'Chargement…' } = {}) {
+  state.isSubmitting = isBusy;
+  document.body.classList.toggle('is-busy', isBusy);
+  setElementsDisabled([
+    els.s3DatasetSelect,
+    els.s3BucketInput,
+    els.s3PrefixInput,
+    els.s3LimitInput,
+    els.s3ConcurrencyInput,
+    els.refreshS3JobsBtn,
+    els.previewMigrationBtn,
+    els.startMigrationBtn,
+    els.startS3JobBtn,
+    els.uploadTabBtn,
+    els.migrationTabBtn,
+    els.jobModalPrev,
+    els.jobModalNext,
+  ], isBusy);
+  if (button) {
+    setButtonLoading(button, isBusy, loadingText);
+  }
+  syncCancelButtons();
 }
 
 function openModalShell() {
@@ -169,29 +206,34 @@ async function hydrateAuthState() {
 
 async function unlockPage() {
   const password = els.passwordInput.value.trim();
-  const response = await fetch('/api/s3/auth', {
-    headers: getApiHeaders({ 'Content-Type': 'application/json' }),
-    method: 'POST',
-    credentials: 'include',
-    body: JSON.stringify({ password }),
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (response.status === 401 && payload?.error?.code === 'unauthorized' && !password) {
-    els.authStateLabel.textContent = 'API verrouillée';
-    els.authHint.textContent = 'Le token API Bearer est requis avant le mot de passe admin S3.';
-    return;
+  setS3Busy(true, { button: els.unlockBtn, loadingText: 'Vérification…' });
+  try {
+    const response = await fetch('/api/s3/auth', {
+      headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+      method: 'POST',
+      credentials: 'include',
+      body: JSON.stringify({ password }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (response.status === 401 && payload?.error?.code === 'unauthorized' && !password) {
+      els.authStateLabel.textContent = 'API verrouillée';
+      els.authHint.textContent = 'Le token API Bearer est requis avant le mot de passe admin S3.';
+      return;
+    }
+    if (!response.ok) {
+      els.authStateLabel.textContent = 'Verrouillé';
+      els.authHint.textContent = payload?.error?.message || 'Mot de passe admin S3 invalide';
+      return;
+    }
+    state.unlocked = true;
+    els.authGate.classList.add('hidden');
+    els.s3Workspace.classList.remove('hidden');
+    els.authStateLabel.textContent = 'Déverrouillé';
+    els.authHint.textContent = 'Accès valide pour 1h.';
+    await refreshS3Jobs();
+  } finally {
+    setS3Busy(false, { button: els.unlockBtn });
   }
-  if (!response.ok) {
-    els.authStateLabel.textContent = 'Verrouillé';
-    els.authHint.textContent = payload?.error?.message || 'Mot de passe admin S3 invalide';
-    return;
-  }
-  state.unlocked = true;
-  els.authGate.classList.add('hidden');
-  els.s3Workspace.classList.remove('hidden');
-  els.authStateLabel.textContent = 'Déverrouillé';
-  els.authHint.textContent = 'Accès valide pour 1h.';
-  await refreshS3Jobs();
 }
 
 async function loadDatasets() {
@@ -256,19 +298,14 @@ async function refreshS3Jobs() {
   }
 }
 
-function renderS3Jobs(jobs) {
-  if (!jobs.length) {
-    els.s3JobsList.innerHTML = '<div class="s3-job-empty">Aucun job S3 pour le moment.</div>';
-    return;
-  }
-  els.s3JobsList.innerHTML = jobs.map((job) => {
-    const isMigration = String(job.kind || '').startsWith('migration');
-    return `
+function renderJobCard(job) {
+  const isMigration = String(job.kind || '').startsWith('migration');
+  return `
     <article class="s3-job-card${state.selectedJobId === job.job_id ? ' is-selected' : ''}" data-job-id="${escapeHtml(job.job_id)}" role="button" tabindex="0">
       <div class="s3-job-header">
         <strong>${escapeHtml(job.job_id)}</strong>
         <div class="s3-job-header-pills">
-          ${isMigration ? '<span class="job-pill job-migration">migration</span>' : ''}
+          ${isMigration ? '<span class="job-pill job-migration">migration</span>' : '<span class="job-pill job-upload">upload</span>'}
           <span class="job-pill job-${escapeHtml(job.status || 'queued')}">${escapeHtml(job.status || 'queued')}</span>
         </div>
       </div>
@@ -280,9 +317,11 @@ function renderS3Jobs(jobs) {
         <span>Erreurs: ${job.failed || 0}</span>
       </div>
     </article>
-  `;}).join('');
+  `;
+}
 
-  els.s3JobsList.querySelectorAll('.s3-job-card').forEach((card) => {
+function bindJobCards(root) {
+  root.querySelectorAll('.s3-job-card').forEach((card) => {
     const open = () => {
       const jobId = card.getAttribute('data-job-id');
       openJobDetails(jobId, 1);
@@ -295,6 +334,17 @@ function renderS3Jobs(jobs) {
       }
     });
   });
+}
+
+function renderS3Jobs(jobs) {
+  const uploadJobs = jobs.filter((job) => !String(job.kind || '').startsWith('migration'));
+  const migrationJobs = jobs.filter((job) => String(job.kind || '').startsWith('migration'));
+
+  els.uploadJobsList.innerHTML = uploadJobs.length ? uploadJobs.map(renderJobCard).join('') : '<div class="s3-job-empty">Aucun job d’upload pour le moment.</div>';
+  els.migrationJobsList.innerHTML = migrationJobs.length ? migrationJobs.map(renderJobCard).join('') : '<div class="s3-job-empty">Aucun job de migration pour le moment.</div>';
+
+  bindJobCards(els.uploadJobsList);
+  bindJobCards(els.migrationJobsList);
 }
 
 async function openJobDetails(jobId, page = 1, options = {}) {
@@ -317,11 +367,11 @@ function syncCancelButtons() {
   const selectedIsActive = activeStatuses.includes(selectedStatus);
 
   if (els.stopS3JobBtn) {
-    els.stopS3JobBtn.disabled = state.isCancellingJobs || activeJobs.length === 0;
+    els.stopS3JobBtn.disabled = state.isCancellingJobs || state.isSubmitting || activeJobs.length === 0;
     els.stopS3JobBtn.textContent = state.isCancellingJobs ? 'Annulation…' : activeJobs.length > 1 ? 'Stop tous les jobs actifs' : 'Stop job actif';
   }
   if (els.jobModalCancelBtn) {
-    els.jobModalCancelBtn.disabled = state.isCancellingJobs || !state.selectedJobId || !selectedIsActive;
+    els.jobModalCancelBtn.disabled = state.isCancellingJobs || state.isSubmitting || !state.selectedJobId || !selectedIsActive;
     els.jobModalCancelBtn.textContent = state.isCancellingJobs ? 'Annulation…' : 'Annuler ce job';
   }
 }
@@ -437,8 +487,8 @@ function renderJobDetailsModal(detail) {
     <div class="s3-job-kpi"><span>Timeout / 403</span><strong>${reasons.timeout + reasons.forbidden}</strong></div>
   `;
   els.jobModalPageLabel.textContent = `Page ${detail.page || 1} / ${totalPages}`;
-  els.jobModalPrev.disabled = (detail.page || 1) <= 1;
-  els.jobModalNext.disabled = (detail.page || 1) >= totalPages;
+  els.jobModalPrev.disabled = (detail.page || 1) <= 1 || state.isSubmitting;
+  els.jobModalNext.disabled = (detail.page || 1) >= totalPages || state.isSubmitting;
   syncCancelButtons();
 
   if (!items.length) {
@@ -565,21 +615,26 @@ function getItemNote(item, tone) {
 }
 
 async function startS3Job() {
-  const body = {
-    dataset_id: els.s3DatasetSelect.value,
-    bucket: els.s3BucketInput.value.trim(),
-    prefix: els.s3PrefixInput.value.trim(),
-    limit: Number.parseInt(els.s3LimitInput.value, 10) || 50,
-    concurrency: Number.parseInt(els.s3ConcurrencyInput.value, 10) || 4,
-  };
-  const response = await fetch('/api/s3/jobs', {
-    method: 'POST',
-    credentials: 'include',
-    headers: getApiHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) throw new Error(`Impossible de lancer le job S3 (${response.status})`);
-  await refreshS3Jobs();
+  setS3Busy(true, { button: els.startS3JobBtn, loadingText: 'Lancement…' });
+  try {
+    const body = {
+      dataset_id: els.s3DatasetSelect.value,
+      bucket: els.s3BucketInput.value.trim(),
+      prefix: els.s3PrefixInput.value.trim(),
+      limit: Number.parseInt(els.s3LimitInput.value, 10) || 50,
+      concurrency: Number.parseInt(els.s3ConcurrencyInput.value, 10) || 4,
+    };
+    const response = await fetch('/api/s3/jobs', {
+      method: 'POST',
+      credentials: 'include',
+      headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) throw new Error(`Impossible de lancer le job S3 (${response.status})`);
+    await refreshS3Jobs();
+  } finally {
+    setS3Busy(false, { button: els.startS3JobBtn });
+  }
 }
 
 async function cancelJob(jobId) {
@@ -588,7 +643,7 @@ async function cancelJob(jobId) {
 }
 
 async function cancelSelectedJob() {
-  if (!state.selectedJobId || state.isCancellingJobs) return;
+  if (!state.selectedJobId || state.isCancellingJobs || state.isSubmitting) return;
   state.isCancellingJobs = true;
   syncCancelButtons();
   try {
@@ -614,46 +669,58 @@ async function fetchMigrationSummary() {
 }
 
 async function previewMigration() {
-  els.migrationHint.textContent = 'Prévisualisation en cours…';
-  const summary = await fetchMigrationSummary();
-  const response = await fetch('/api/s3/migration-jobs', {
-    method: 'POST',
-    credentials: 'include',
-    headers: getApiHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ preview: true, sample_limit: 25 }),
-  });
-  if (!response.ok) throw new Error(`Impossible de lancer le preview de migration (${response.status})`);
-  const payload = await response.json();
-  els.migrationHint.textContent = `Preview lancé · ${summary.total} item(s) impacté(s).`;
-  await refreshS3Jobs();
-  if (payload?.data?.job_id) {
-    await openJobDetails(payload.data.job_id, 1);
+  setS3Busy(true, { button: els.previewMigrationBtn, loadingText: 'Prévisualisation…' });
+  try {
+    els.migrationHint.textContent = 'Prévisualisation en cours…';
+    const summary = await fetchMigrationSummary();
+    const response = await fetch('/api/s3/migration-jobs', {
+      method: 'POST',
+      credentials: 'include',
+      headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ preview: true, sample_limit: 25 }),
+    });
+    if (!response.ok) throw new Error(`Impossible de lancer le preview de migration (${response.status})`);
+    const payload = await response.json();
+    els.migrationHint.textContent = `Preview lancé · ${summary.total} item(s) impacté(s).`;
+    await refreshS3Jobs();
+    if (payload?.data?.job_id) {
+      await openJobDetails(payload.data.job_id, 1);
+    }
+  } finally {
+    setS3Busy(false, { button: els.previewMigrationBtn });
   }
 }
 
 async function startMigration() {
-  const summary = await fetchMigrationSummary();
-  const confirmed = window.confirm(`Lancer la migration des URLs stockées ? ${summary.total} item(s) seront impacté(s). Un backup JSON sera créé avant écriture.`);
-  if (!confirmed) return;
-  els.migrationHint.textContent = `Migration en cours… ${summary.total} item(s) à traiter.`;
-  const response = await fetch('/api/s3/migration-jobs', {
-    method: 'POST',
-    credentials: 'include',
-    headers: getApiHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ preview: false }),
-  });
-  if (!response.ok) throw new Error(`Impossible de lancer la migration (${response.status})`);
-  const payload = await response.json();
-  els.migrationHint.textContent = `Migration lancée · ${summary.total} item(s) visé(s).`;
-  await refreshS3Jobs();
-  if (payload?.data?.job_id) {
-    await openJobDetails(payload.data.job_id, 1);
+  setS3Busy(true, { button: els.startMigrationBtn, loadingText: 'Préparation…' });
+  try {
+    const summary = await fetchMigrationSummary();
+    setS3Busy(false, { button: els.startMigrationBtn });
+    const confirmed = window.confirm(`Lancer la migration des URLs stockées ? ${summary.total} item(s) seront impacté(s). Un backup JSON sera créé avant écriture.`);
+    if (!confirmed) return;
+    setS3Busy(true, { button: els.startMigrationBtn, loadingText: 'Migration…' });
+    els.migrationHint.textContent = `Migration en cours… ${summary.total} item(s) à traiter.`;
+    const response = await fetch('/api/s3/migration-jobs', {
+      method: 'POST',
+      credentials: 'include',
+      headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ preview: false }),
+    });
+    if (!response.ok) throw new Error(`Impossible de lancer la migration (${response.status})`);
+    const payload = await response.json();
+    els.migrationHint.textContent = `Migration lancée · ${summary.total} item(s) visé(s).`;
+    await refreshS3Jobs();
+    if (payload?.data?.job_id) {
+      await openJobDetails(payload.data.job_id, 1);
+    }
+  } finally {
+    setS3Busy(false, { button: els.startMigrationBtn });
   }
 }
 
 async function stopActiveS3Job() {
   const activeJobs = state.s3Jobs.filter((job) => ['running', 'queued', 'cancel_requested'].includes(job.status));
-  if (!activeJobs.length || state.isCancellingJobs) return;
+  if (!activeJobs.length || state.isCancellingJobs || state.isSubmitting) return;
   const confirmed = window.confirm(
     activeJobs.length > 1
       ? `Annuler ${activeJobs.length} jobs actifs ? Cette action va demander l’arrêt de tous les jobs en cours ou en attente.`

@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Fast Fashion Dashboard API Docs</title>
+    <link rel="stylesheet" href="./shared-ui.css?v=20260529-2" />
     <style>
       :root {
         color-scheme: dark;
@@ -22,7 +23,8 @@
       * { box-sizing: border-box; }
       body {
         margin: 0;
-        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        padding: 32px 20px 60px;
+        font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, Georgia, serif;
         background:
           radial-gradient(circle at top left, rgba(167, 139, 250, 0.18), transparent 32%),
           radial-gradient(circle at top right, rgba(56, 189, 248, 0.12), transparent 28%),
@@ -33,7 +35,7 @@
       .wrap {
         max-width: 1240px;
         margin: 0 auto;
-        padding: 32px 20px 80px;
+        padding: 0 0 80px;
       }
       .hero {
         background: linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(15, 23, 42, 0.82));
@@ -87,9 +89,7 @@
       .card h2 { font-size: 1.35rem; }
       .card h3 { font-size: 1rem; color: #f8fafc; }
       .muted { color: var(--muted); }
-      code, pre {
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      }
+      code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
       pre {
         margin: 0;
         overflow: auto;
@@ -184,7 +184,7 @@
       }
       @media (max-width: 900px) {
         .grid.two { grid-template-columns: 1fr; }
-        .wrap { padding: 18px 14px 60px; }
+        body { padding: 18px 14px 60px; }
       }
     </style>
   </head>
@@ -277,103 +277,34 @@
           <article class="card" style="background: var(--panel-2);">
             <div class="endpoint"><span class="method get">GET</span><span class="path">/api/datasets</span></div>
             <p class="muted small">Retourne les métadonnées des datasets exposés. Peut aussi filtrer un dataset précis.</p>
-            <div class="param-list">
-              <div class="param-item"><strong>dataset</strong><span>query, optionnel — valeurs: <code class="inline">shein</code>, <code class="inline">asos</code></span></div>
-            </div>
-            <div class="response-list">
-              <div class="response-item"><strong>200</strong><span>Schéma: <code class="inline">DatasetsResponse</code></span></div>
-              <div class="response-item"><strong>401</strong><span>Schéma: <code class="inline">ErrorResponse</code></span></div>
-            </div>
           </article>
 
           <article class="card" style="background: var(--panel-2);">
             <div class="endpoint"><span class="method get">GET</span><span class="path">/api/categories</span></div>
             <p class="muted small">Liste paginée des catégories stables d’un dataset.</p>
-            <div class="param-list">
-              <div class="param-item"><strong>dataset</strong><span>query, optionnel — défaut <code class="inline">shein</code></span></div>
-              <div class="param-item"><strong>page</strong><span>query, optionnel — pagination 1-based</span></div>
-              <div class="param-item"><strong>pageSize</strong><span>query, optionnel — max 200</span></div>
-            </div>
-            <div class="response-list">
-              <div class="response-item"><strong>200</strong><span>Schéma: <code class="inline">CategoriesListResponse</code></span></div>
-              <div class="response-item"><strong>400 / 401</strong><span>Schéma: <code class="inline">ErrorResponse</code></span></div>
-            </div>
           </article>
 
           <article class="card" style="background: var(--panel-2);">
             <div class="endpoint"><span class="method get">GET</span><span class="path">/api/categories/{slug}</span></div>
             <p class="muted small">Détail d’une catégorie par slug stable.</p>
-            <div class="param-list">
-              <div class="param-item"><strong>slug</strong><span>path, requis</span></div>
-              <div class="param-item"><strong>dataset</strong><span>query, optionnel</span></div>
-            </div>
-            <div class="response-list">
-              <div class="response-item"><strong>200</strong><span>Schéma: <code class="inline">CategoryDetailResponse</code></span></div>
-              <div class="response-item"><strong>404</strong><span>Schéma: <code class="inline">ErrorResponse</code></span></div>
-            </div>
           </article>
 
           <article class="card" style="background: var(--panel-2);">
             <div class="endpoint"><span class="method get">GET</span><span class="path">/api/products</span></div>
             <p class="muted small">Liste paginée des produits uniquement. Les catégories sont désormais récupérées séparément via <code class="inline">/api/categories</code>.</p>
-            <div class="param-list">
-              <div class="param-item"><strong>dataset</strong><span>query — <code class="inline">shein</code> ou <code class="inline">asos</code></span></div>
-              <div class="param-item"><strong>search</strong><span>query — recherche plein texte</span></div>
-              <div class="param-item"><strong>category</strong><span>query — filtre catégorie</span></div>
-              <div class="param-item"><strong>sort</strong><span>query — <code class="inline">relevance</code>, <code class="inline">price-asc</code>, <code class="inline">price-desc</code>, <code class="inline">rating-desc</code>, <code class="inline">reviews-desc</code>, <code class="inline">name-asc</code></span></div>
-              <div class="param-item"><strong>imagesOnly</strong><span>query — seulement les produits ayant au moins une image source dans le catalogue importé</span></div>
-              <div class="param-item"><strong>savedOnS3</strong><span>query — seulement les produits marqués comme enregistrés sur S3 dans l’état runtime SQLite</span></div>
-              <div class="param-item"><strong>page</strong> <span>query — pagination</span></div>
-              <div class="param-item"><strong>pageSize</strong><span>query — max 200</span></div>
-              <div class="param-item"><strong>format</strong><span>query — <code class="inline">legacy</code> ou <code class="inline">resource</code></span></div>
-            </div>
-            <div class="response-list">
-              <div class="response-item"><strong>200</strong><span>Schéma: <code class="inline">ProductsLegacyResponse</code> ou <code class="inline">ProductsResourceResponse</code> (sans catégories embarquées)</span></div>
-              <div class="response-item"><strong>400 / 401</strong><span>Schéma: <code class="inline">ErrorResponse</code></span></div>
-            </div>
           </article>
 
           <article class="card" style="background: var(--panel-2);">
             <div class="endpoint"><span class="method get">GET</span><span class="path">/api/products/{goods_id}</span></div>
             <p class="muted small">Détail produit unique, avec payload dashboard legacy + payload resource stable dans la même réponse.</p>
-            <div class="param-list">
-              <div class="param-item"><strong>goods_id</strong><span>path, requis — exemple <code class="inline">shein:123</code></span></div>
-              <div class="param-item"><strong>dataset</strong><span>query, optionnel</span></div>
-            </div>
-            <div class="response-list">
-              <div class="response-item"><strong>200</strong><span>Schéma: <code class="inline">ProductDetailResponse</code></span></div>
-              <div class="response-item"><strong>404</strong><span>Schéma: <code class="inline">ErrorResponse</code></span></div>
-            </div>
           </article>
         </div>
       </section>
-
-      <div class="grid two">
-        <section class="card">
-          <h2>Objets documentés</h2>
-          <ul>
-            <li><code class="inline">DatasetMeta</code></li>
-            <li><code class="inline">CategoryResource</code></li>
-            <li><code class="inline">ProductResource</code></li>
-            <li><code class="inline">LegacyProduct</code></li>
-            <li><code class="inline">Pagination</code></li>
-            <li><code class="inline">HealthResponse</code></li>
-            <li><code class="inline">S3Config</code>, <code class="inline">S3JobState</code>, <code class="inline">S3JobDetailResponse</code></li>
-            <li><code class="inline">ErrorResponse</code></li>
-          </ul>
-        </section>
-
-        <section class="card">
-          <h2>Pourquoi l’ancienne spec semblait vide</h2>
-          <p class="muted small">
-            L’ancienne version exposait surtout des <code class="inline">summary</code> sans vrai contrat de paramètres, réponses ni schémas.
-            La spec actuelle documente maintenant les structures et comportements essentiels. Pour la version brute machine-readable,
-            utilise <code class="inline">/openapi.json</code>.
-          </p>
-          <pre>curl https://ton-domaine/openapi.json
-curl -H "Authorization: Bearer &lt;token&gt;" https://ton-domaine/api/products?dataset=shein&format=resource</pre>
-        </section>
-      </div>
     </div>
+
+    <script src="./shared-ui.js?v=20260529-2"></script>
+    <script>
+      renderGlobalNav('docs');
+    </script>
   </body>
 </html>

@@ -20,6 +20,7 @@ const state = {
   categoryPageSize: 24,
   productDetailCache: {},
   selectedProductKey: null,
+  isBusy: false,
 };
 
 const els = {
@@ -61,12 +62,16 @@ const els = {
   productModalDisplayJson: document.getElementById('productModalDisplayJson'),
   productModalApiJson: document.getElementById('productModalApiJson'),
   authGate: document.getElementById('authGate'),
+  apiAuthForm: document.getElementById('apiAuthForm'),
   apiTokenInput: document.getElementById('apiTokenInput'),
+  apiTokenToggleBtn: document.getElementById('apiTokenToggleBtn'),
   unlockApiBtn: document.getElementById('unlockApiBtn'),
   apiAuthHint: document.getElementById('apiAuthHint'),
 };
 
 async function init() {
+  renderGlobalNav('dashboard');
+  initPasswordFieldToggle({ input: els.apiTokenInput, button: els.apiTokenToggleBtn, hiddenLabel: 'Afficher', shownLabel: 'Masquer' });
   bindEvents();
   hydrateApiToken();
   syncControlsFromState();
@@ -75,17 +80,13 @@ async function init() {
 }
 
 function bindEvents() {
-  els.unlockApiBtn?.addEventListener('click', async () => {
+  els.apiAuthForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
     await unlockApi();
-  });
-  els.apiTokenInput?.addEventListener('keydown', async (event) => {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      await unlockApi();
-    }
   });
 
   els.datasetSelect.addEventListener('change', async (event) => {
+    if (state.isBusy) return;
     state.currentDataset = event.target.value;
     state.category = '';
     state.page = 1;
@@ -97,6 +98,7 @@ function bindEvents() {
   });
 
   els.searchInput.addEventListener('input', debounce(async (event) => {
+    if (state.isBusy) return;
     state.search = event.target.value.trim().toLowerCase();
     state.page = 1;
     await refreshUI({
@@ -106,6 +108,7 @@ function bindEvents() {
   }, 250));
 
   els.categorySelect.addEventListener('change', async (event) => {
+    if (state.isBusy) return;
     state.category = event.target.value;
     state.page = 1;
     await refreshUI({
@@ -115,16 +118,19 @@ function bindEvents() {
   });
 
   els.catPrevBtn.addEventListener('click', async () => {
+    if (state.isBusy) return;
     state.categoryPage = Math.max(1, state.categoryPage - 1);
     await refreshCategoryOptions();
   });
 
   els.catNextBtn.addEventListener('click', async () => {
+    if (state.isBusy) return;
     state.categoryPage += 1;
     await refreshCategoryOptions();
   });
 
   els.sortSelect.addEventListener('change', async (event) => {
+    if (state.isBusy) return;
     state.sort = event.target.value;
     state.page = 1;
     await refreshUI({
@@ -134,6 +140,7 @@ function bindEvents() {
   });
 
   els.imagesOnlyToggle.addEventListener('change', async (event) => {
+    if (state.isBusy) return;
     state.imagesOnly = event.target.checked;
     state.page = 1;
     await refreshUI({
@@ -143,6 +150,7 @@ function bindEvents() {
   });
 
   els.savedOnS3Toggle.addEventListener('change', async (event) => {
+    if (state.isBusy) return;
     state.savedOnS3 = event.target.checked;
     state.page = 1;
     await refreshUI({
@@ -152,6 +160,7 @@ function bindEvents() {
   });
 
   els.pageSizeSelect.addEventListener('change', async (event) => {
+    if (state.isBusy) return;
     state.pageSize = Math.max(1, Number.parseInt(event.target.value, 10) || 24);
     state.page = 1;
     await refreshUI({
@@ -161,22 +170,19 @@ function bindEvents() {
   });
 
   els.prevPageBtn.addEventListener('click', async () => {
+    if (state.isBusy) return;
     state.page = Math.max(1, state.page - 1);
-    await refreshUI({
-      title: 'Navigation de page…',
-      text: 'On charge la page précédente du catalogue.',
-    });
+    await refreshUI({ title: 'Navigation de page…', text: 'On charge la page précédente du catalogue.' });
   });
 
   els.nextPageBtn.addEventListener('click', async () => {
+    if (state.isBusy) return;
     state.page += 1;
-    await refreshUI({
-      title: 'Navigation de page…',
-      text: 'On charge la page suivante du catalogue.',
-    });
+    await refreshUI({ title: 'Navigation de page…', text: 'On charge la page suivante du catalogue.' });
   });
 
   els.resetFiltersBtn.addEventListener('click', async () => {
+    if (state.isBusy) return;
     state.search = '';
     state.category = '';
     state.imagesOnly = false;
@@ -185,10 +191,7 @@ function bindEvents() {
     state.page = 1;
     state.pageSize = 24;
     syncControlsFromState();
-    await refreshUI({
-      title: 'Réinitialisation…',
-      text: 'On remet le catalogue dans son état de départ.',
-    });
+    await refreshUI({ title: 'Réinitialisation…', text: 'On remet le catalogue dans son état de départ.' });
   });
 
   els.productModalCloseBtn?.addEventListener('click', closeProductModal);
@@ -232,6 +235,28 @@ function setApiUnlocked(message = '') {
   }
 }
 
+function setDashboardBusy(isBusy, { button = null, loadingText = 'Chargement…' } = {}) {
+  state.isBusy = isBusy;
+  document.body.classList.toggle('is-busy', isBusy);
+  setElementsDisabled([
+    els.datasetSelect,
+    els.searchInput,
+    els.categorySelect,
+    els.sortSelect,
+    els.imagesOnlyToggle,
+    els.savedOnS3Toggle,
+    els.resetFiltersBtn,
+    els.pageSizeSelect,
+    els.prevPageBtn,
+    els.nextPageBtn,
+    els.catPrevBtn,
+    els.catNextBtn,
+  ], isBusy);
+  if (button) {
+    setButtonLoading(button, isBusy, loadingText);
+  }
+}
+
 async function unlockApi() {
   const candidate = (els.apiTokenInput?.value || '').trim();
   state.apiToken = candidate;
@@ -240,11 +265,13 @@ async function unlockApi() {
   } else {
     window.localStorage.removeItem(API_TOKEN_STORAGE_KEY);
   }
-  await loadDatasets();
-  await refreshUI({
-    title: 'Vérification du token…',
-    text: 'On teste l’accès à l’API protégée.',
-  });
+  setDashboardBusy(true, { button: els.unlockApiBtn, loadingText: 'Vérification…' });
+  try {
+    await loadDatasets();
+    await refreshUI({ title: 'Vérification du token…', text: 'On teste l’accès à l’API protégée.' });
+  } finally {
+    setDashboardBusy(false, { button: els.unlockApiBtn });
+  }
 }
 
 async function loadDatasets() {
@@ -291,6 +318,7 @@ async function refreshUI(options = {}) {
   syncControlsFromState();
   updateStatus(loadingTitle, 'info');
   setContentLoading(true, loadingTitle, loadingText);
+  setDashboardBusy(true);
   els.datasetLoader.classList.remove('hidden');
   try {
     const [payload, categoriesPayload] = await Promise.all([
@@ -308,6 +336,7 @@ async function refreshUI(options = {}) {
   } finally {
     els.datasetLoader.classList.add('hidden');
     setContentLoading(false);
+    setDashboardBusy(false);
   }
 }
 
@@ -350,7 +379,6 @@ async function fetchCategories() {
   return response.json();
 }
 
-
 function render(payload, categories = [], categoryPagination = null) {
   const dataset = payload.dataset;
   const products = payload.products || [];
@@ -384,12 +412,11 @@ function renderCategorySelect(categories, categoryPagination = null) {
   const categoryExists = (categories || []).some((item) => item.name === state.category);
   els.categorySelect.value = categoryExists ? state.category : '';
   if (!categoryExists && state.category && state.categoryPage !== 1) {
-    // keep selected category filter across category-option pages
     els.categorySelect.value = '';
   }
   els.catPageIndicator.textContent = `${state.categoryPage} / ${totalPages}`;
-  els.catPrevBtn.disabled = state.categoryPage <= 1;
-  els.catNextBtn.disabled = state.categoryPage >= totalPages;
+  els.catPrevBtn.disabled = state.categoryPage <= 1 || state.isBusy;
+  els.catNextBtn.disabled = state.categoryPage >= totalPages || state.isBusy;
 }
 
 function renderSummary(dataset, totalCategories, pagination) {
@@ -403,6 +430,7 @@ function renderSummary(dataset, totalCategories, pagination) {
 }
 
 async function refreshCategoryOptions() {
+  setDashboardBusy(true);
   try {
     const categoriesPayload = await fetchCategories();
     state.currentCategories = categoriesPayload.data || [];
@@ -416,6 +444,8 @@ async function refreshCategoryOptions() {
   } catch (error) {
     console.error(error);
     updateStatus(`Erreur catégories: ${error.message}`, 'error');
+  } finally {
+    setDashboardBusy(false);
   }
 }
 
@@ -443,8 +473,8 @@ function renderActiveFilters() {
 function renderPagination(pagination) {
   els.paginationMeta.textContent = `Affichage ${pagination.from || 0}-${pagination.to || 0} sur ${new Intl.NumberFormat('fr-FR').format(pagination.total || 0)} produits`;
   els.pageIndicator.textContent = `Page ${pagination.page || 1} / ${pagination.totalPages || 1}`;
-  els.prevPageBtn.disabled = (pagination.page || 1) <= 1;
-  els.nextPageBtn.disabled = (pagination.page || 1) >= (pagination.totalPages || 1);
+  els.prevPageBtn.disabled = (pagination.page || 1) <= 1 || state.isBusy;
+  els.nextPageBtn.disabled = (pagination.page || 1) >= (pagination.totalPages || 1) || state.isBusy;
 }
 
 function getImageSyncSnapshot(product = {}) {

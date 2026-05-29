@@ -4,7 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Fast Fashion Dashboard — S3</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./shared-ui.css?v=20260529-2" />
+    <link rel="stylesheet" href="./styles.css?v=20260529-2" />
   </head>
   <body>
     <div class="app-shell">
@@ -36,10 +37,18 @@
       <section id="authGate" class="auth-gate">
         <h2>Accès protégé</h2>
         <p>Entre le mot de passe admin S3 pour déverrouiller cette page.</p>
-        <div class="auth-row">
-          <input id="passwordInput" type="password" placeholder="Mot de passe" />
-          <button id="unlockBtn" class="primary-btn" type="button">Déverrouiller</button>
-        </div>
+        <form id="s3AuthForm" class="auth-form">
+          <label class="field-group" for="passwordInput">
+            <span>Mot de passe admin S3</span>
+            <div class="secret-field">
+              <input id="passwordInput" name="s3_admin_password" type="password" placeholder="Mot de passe" autocomplete="current-password" />
+              <button id="passwordToggleBtn" class="secondary-btn secret-toggle" type="button" aria-pressed="false">Afficher</button>
+            </div>
+          </label>
+          <div class="s3-actions-inline">
+            <button id="unlockBtn" class="primary-btn" type="submit">Déverrouiller</button>
+          </div>
+        </form>
         <p id="authHint" class="muted small"></p>
       </section>
 
@@ -47,63 +56,93 @@
         <section class="s3-panel">
           <div class="section-heading">
             <div>
-              <p class="eyebrow">S3 background jobs</p>
-              <h2>Upload des images vers S3</h2>
+              <p class="eyebrow">Flux de travail</p>
+              <h2>Opérations S3</h2>
+              <p class="muted small">Sépare les uploads d’images des migrations d’URLs existantes. Les deux types de jobs restent visibles dans leur onglet dédié.</p>
             </div>
             <div class="s3-actions-inline">
               <button id="refreshS3JobsBtn" class="secondary-btn" type="button">Actualiser</button>
-              <a class="secondary-btn link-btn" href="/">Retour dashboard</a>
             </div>
           </div>
-          <div class="s3-grid">
-            <div class="field-group">
-              <label for="s3DatasetSelect">Source</label>
-              <select id="s3DatasetSelect"></select>
-            </div>
-            <div class="field-group">
-              <label for="s3BucketInput">Bucket</label>
-              <input id="s3BucketInput" type="text" placeholder="my-bucket" />
-            </div>
-            <div class="field-group">
-              <label for="s3PrefixInput">Prefix</label>
-              <input id="s3PrefixInput" type="text" placeholder="fast-fashion/images" />
-            </div>
-            <div class="field-group">
-              <label for="s3LimitInput">Nombre de ressources</label>
-              <input id="s3LimitInput" type="number" min="1" max="10000" value="50" />
-            </div>
-            <div class="field-group">
-              <label for="s3ConcurrencyInput">Multiprocessing</label>
-              <input id="s3ConcurrencyInput" type="number" min="1" max="24" value="4" />
-            </div>
-          </div>
-          <div class="s3-actions">
-            <button id="startS3JobBtn" class="primary-btn" type="button">Lancer l’upload S3</button>
-            <button id="stopS3JobBtn" class="secondary-btn" type="button">Stop job actif</button>
-            <span id="s3ConfigHint" class="muted small"></span>
+          <div class="tabs" role="tablist" aria-label="Types de jobs S3">
+            <button id="uploadTabBtn" class="tab-button is-active" type="button" role="tab" aria-selected="true" data-tab-target="upload">
+              <strong>Uploads S3</strong>
+              <span>Images produits → bucket</span>
+            </button>
+            <button id="migrationTabBtn" class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="migration">
+              <strong>Migrations d’URL</strong>
+              <span>s3:// → AWS_URL public</span>
+            </button>
           </div>
         </section>
 
-        <section class="s3-panel">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Migration des URLs existantes</p>
-              <h2>Réécrire les anciens s3:// en URLs publiques AWS_URL</h2>
-              <p class="muted small">Le script existant est lancé en background via l’API admin. Un preview montre un échantillon sans écrire. Le run complet crée un backup JSON avant modification.</p>
+        <section class="tab-panel is-active" data-tab-panel="upload">
+          <section class="s3-panel">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">S3 background jobs</p>
+                <h2>Upload des images vers S3</h2>
+              </div>
             </div>
-          </div>
-          <div class="s3-actions">
-            <button id="previewMigrationBtn" class="secondary-btn" type="button">Prévisualiser la migration</button>
-            <button id="startMigrationBtn" class="primary-btn" type="button">Lancer la migration</button>
-            <span id="migrationHint" class="muted small"></span>
-          </div>
+            <div class="s3-grid">
+              <div class="field-group">
+                <label for="s3DatasetSelect">Source</label>
+                <select id="s3DatasetSelect"></select>
+              </div>
+              <div class="field-group">
+                <label for="s3BucketInput">Bucket</label>
+                <input id="s3BucketInput" type="text" placeholder="my-bucket" />
+              </div>
+              <div class="field-group">
+                <label for="s3PrefixInput">Prefix</label>
+                <input id="s3PrefixInput" type="text" placeholder="fast-fashion/images" />
+              </div>
+              <div class="field-group">
+                <label for="s3LimitInput">Nombre de ressources</label>
+                <input id="s3LimitInput" type="number" min="1" max="10000" value="50" />
+              </div>
+              <div class="field-group">
+                <label for="s3ConcurrencyInput">Multiprocessing</label>
+                <input id="s3ConcurrencyInput" type="number" min="1" max="24" value="4" />
+              </div>
+            </div>
+            <div class="s3-actions">
+              <button id="startS3JobBtn" class="primary-btn" type="button">Lancer l’upload S3</button>
+              <button id="stopS3JobBtn" class="secondary-btn" type="button">Stop job actif</button>
+              <span id="s3ConfigHint" class="muted small"></span>
+            </div>
+          </section>
+
+          <section class="s3-panel">
+            <div class="section-heading">
+              <h2>Jobs d’upload</h2>
+            </div>
+            <div id="uploadJobsList" class="s3-jobs-list"></div>
+          </section>
         </section>
 
-        <section class="s3-panel">
-          <div class="section-heading">
-            <h2>Jobs en cours et historiques</h2>
-          </div>
-          <div id="s3JobsList" class="s3-jobs-list"></div>
+        <section class="tab-panel" data-tab-panel="migration" hidden>
+          <section class="s3-panel">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Migration des URLs existantes</p>
+                <h2>Réécrire les anciens s3:// en URLs publiques AWS_URL</h2>
+                <p class="muted small">Le script existant est lancé en background via l’API admin. Un preview montre un échantillon sans écrire. Le run complet crée un backup JSON avant modification.</p>
+              </div>
+            </div>
+            <div class="s3-actions">
+              <button id="previewMigrationBtn" class="secondary-btn" type="button">Prévisualiser la migration</button>
+              <button id="startMigrationBtn" class="primary-btn" type="button">Lancer la migration</button>
+              <span id="migrationHint" class="muted small"></span>
+            </div>
+          </section>
+
+          <section class="s3-panel">
+            <div class="section-heading">
+              <h2>Jobs de migration</h2>
+            </div>
+            <div id="migrationJobsList" class="s3-jobs-list"></div>
+          </section>
         </section>
       </section>
 
@@ -147,6 +186,7 @@
       </div>
     </div>
 
-    <script src="./s3.js"></script>
+    <script src="./shared-ui.js?v=20260529-2"></script>
+    <script src="./s3.js?v=20260529-2"></script>
   </body>
 </html>
