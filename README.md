@@ -158,12 +158,15 @@ S3 / AWS notes:
 - `AWS_PREFIX` = optional object-key prefix prepended to uploaded images and shown in the S3 admin UI
 - `AWS_URL` = public base URL returned by the app and used by the migration script/UI to rewrite stored `s3://...` values into public URLs
 - `AWS_REGION` / `AWS_DEFAULT_REGION` = optional region hint; R2 resolves to `auto` when `AWS_ENDPOINT_URL` points at `*.r2.cloudflarestorage.com`
-- `FAST_FASHION_S3_ADMIN_PASSWORD` = admin password for the protected S3 area (upload jobs, migration jobs, S3 config UI/API)
+- `FAST_FASHION_S3_ADMIN_PASSWORD` = admin password for the protected S3 area (upload jobs, URL migration jobs, state cleanup jobs, S3 config UI/API)
 - S3/R2 config is environment-authoritative: the admin UI reads effective values from env and no longer persists bucket/prefix/endpoint/public URL overrides in SQLite
-- the S3 admin page now exposes a migration section that launches the existing `scripts/migrate_aws_public_urls.py` logic in a background admin job
-- migration preview mode shows a sample without writing; full migration creates a JSON backup of `s3_objects` before updating stored URLs
-- the S3 admin page also exposes a stale-state cleanup flow for resetting old `saved_on_s3` records after bucket/credential/content changes; preview shows the targeted records and full cleanup creates a JSON backup before clearing those persisted S3 flags/URLs
-- stale-state cleanup now targets both bucket mismatches and objects that are no longer readable through the currently configured S3 credentials/bucket, which covers credential rotations where the bucket name stays the same but old objects are no longer accessible
+- the S3 admin page now exposes three separated job families: uploads, URL migrations, and stale-state cleanup
+- every family follows the same lifecycle: `preview` via `dry_run=true`, `start` via `dry_run=false`, `stop`, `detail`, and `history`
+- preview jobs are persisted in history with `job_family` and `dry_run=true`; they never write to S3, `s3_objects`, or JSON backup files
+- canonical protected routes are `GET/POST /api/s3/upload-jobs`, `GET/POST /api/s3/url-migration-jobs`, and `GET/POST /api/s3/state-cleanup-jobs`
+- shared detail/cancel routes stay available at `GET /api/s3/jobs/{job_id}` and `POST /api/s3/jobs/{job_id}/cancel`
+- deprecated compatibility summaries remain available at `/api/s3/migration-summary` and `/api/s3/cleanup-summary`, but the canonical preview flow is now job creation with `dry_run=true`
+- stale-state cleanup still targets both bucket mismatches and objects that are no longer readable through the currently configured S3 credentials/bucket, which covers credential rotations where the bucket name stays the same but old objects are no longer accessible
 
 Dashboard notes:
 - the category stat on the homepage reflects the total number of available categories from `/api/categories` pagination metadata, not just the current category-options page

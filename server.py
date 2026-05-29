@@ -20,7 +20,15 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 import unicodedata
 
 from dataset_service import load_dotenv
-from s3_jobs import S3JobManager
+from s3_job_operations import (
+    JOB_DEFINITIONS,
+    STATE_CLEANUP_JOB_FAMILY,
+    UPLOAD_JOB_FAMILY,
+    URL_MIGRATION_JOB_FAMILY,
+    build_job_id,
+    normalize_job_metadata,
+)
+from s3_jobs import ACTIVE_JOB_STATUSES, S3JobManager
 from scripts.cleanup_stale_s3_objects import apply_cleanup as s3_cleanup_apply, collect_stale_rows as s3_cleanup_collect, write_backup as s3_cleanup_write_backup
 from scripts.migrate_aws_public_urls import apply_changes as migrate_apply_changes, collect_changes as migrate_collect_changes, write_backup as migrate_write_backup
 
@@ -168,7 +176,7 @@ OPENAPI_SPEC = {
     'info': {
         'title': 'Fast Fashion Dashboard API',
         'version': '1.3.0',
-        'description': 'Read-only API for categories/products plus background S3 jobs.',
+        'description': 'Read-only API for categories/products plus protected S3 job families with dry-run previews.',
     },
     'servers': [{'url': '/'}],
     'tags': [
@@ -595,6 +603,9 @@ OPENAPI_SPEC = {
                     'concurrency': {'type': 'integer'},
                     'source_filter': {'type': ['string', 'null']},
                     'last_message': {'type': ['string', 'null']},
+                    'job_family': {'type': 'string', 'enum': ['upload', 'url_migration', 'state_cleanup']},
+                    'dry_run': {'type': 'boolean'},
+                    'kind': {'type': 'string'},
                     'items': {'type': ['array', 'null'], 'items': {'$ref': '#/components/schemas/S3JobItem'}},
                 },
             },
@@ -645,28 +656,25 @@ OPENAPI_SPEC = {
                     'password': {'type': 'string'},
                 },
             },
-            'S3JobCreateRequest': {
+            'S3UploadJobCreateRequest': {
                 'type': 'object',
                 'properties': {
                     'dataset_id': {'type': 'string', 'enum': ['shein', 'asos'], 'default': 'shein'},
                     'source': {'type': 'string', 'default': 'products'},
                     'limit': {'type': 'integer', 'minimum': 1, 'default': 100},
                     'concurrency': {'type': 'integer', 'minimum': 1, 'maximum': 24, 'default': 4},
-                    'bucket': {'type': 'string'},
-                    'prefix': {'type': 'string'},
-                    'region_name': {'type': 'string'},
-                    'endpoint_url': {'type': 'string'},
                     'source_filter': {'type': 'string'},
+                    'dry_run': {'type': 'boolean', 'default': False},
                 },
             },
-            'S3MigrationJobCreateRequest': {
+            'S3UrlMigrationJobCreateRequest': {
                 'type': 'object',
                 'properties': {
-                    'preview': {'type': 'boolean', 'default': False},
+                    'dry_run': {'type': 'boolean', 'default': False},
                     'sample_limit': {'type': 'integer', 'minimum': 1, 'maximum': 200, 'default': 25},
                 },
             },
-            'S3MigrationSummary': {
+            'S3UrlMigrationSummary': {
                 'type': 'object',
                 'required': ['total', 'sample_limit', 'sample', 'public_url'],
                 'properties': {
@@ -679,14 +687,14 @@ OPENAPI_SPEC = {
                     },
                 },
             },
-            'S3CleanupJobCreateRequest': {
+            'S3StateCleanupJobCreateRequest': {
                 'type': 'object',
                 'properties': {
-                    'preview': {'type': 'boolean', 'default': False},
+                    'dry_run': {'type': 'boolean', 'default': False},
                     'sample_limit': {'type': 'integer', 'minimum': 1, 'maximum': 200, 'default': 25},
                 },
             },
-            'S3CleanupSummary': {
+            'S3StateCleanupSummary': {
                 'type': 'object',
                 'required': ['total', 'sample_limit', 'sample', 'current_bucket'],
                 'properties': {
@@ -981,16 +989,16 @@ OPENAPI_SPEC = {
                 },
             },
         },
-        '/api/s3/jobs': {
+        '/api/s3/upload-jobs': {
             'get': {
                 'tags': ['s3'],
-                'operationId': 'listS3Jobs',
-                'summary': 'List jobs',
-                'description': 'Returns S3 job history plus the effective non-secret config.',
+                'operationId': 'listS3UploadJobs',
+                'summary': 'List upload jobs',
+                'description': 'Returns only S3 upload job history plus the effective non-secret config.',
                 'security': [{'bearerAuth': []}],
                 'responses': {
                     '200': {
-                        'description': 'S3 jobs list.',
+                        'description': 'S3 upload jobs list.',
                         'content': {'application/json': {'schema': {'$ref': '#/components/schemas/S3JobsListResponse'}}},
                     },
                     '401': {'$ref': '#/components/responses/Unauthorized'},
@@ -998,21 +1006,21 @@ OPENAPI_SPEC = {
             },
             'post': {
                 'tags': ['s3'],
-                'operationId': 'createS3Job',
-                'summary': 'Create job',
-                'description': 'Starts a new S3 background sync job for a dataset.',
+                'operationId': 'createS3UploadJob',
+                'summary': 'Create upload job',
+                'description': 'Starts a new upload job, or a dry-run preview when dry_run=true.',
                 'security': [{'bearerAuth': []}],
                 'requestBody': {
                     'required': True,
                     'content': {
                         'application/json': {
-                            'schema': {'$ref': '#/components/schemas/S3JobCreateRequest'},
+                            'schema': {'$ref': '#/components/schemas/S3UploadJobCreateRequest'},
                         }
                     },
                 },
                 'responses': {
                     '202': {
-                        'description': 'Job created.',
+                        'description': 'Upload job created.',
                         'content': {'application/json': {'schema': {'$ref': '#/components/schemas/S3JobAcceptedResponse'}}},
                     },
                     '400': {'$ref': '#/components/responses/BadRequest'},
@@ -1066,37 +1074,52 @@ OPENAPI_SPEC = {
             'get': {
                 'tags': ['s3'],
                 'operationId': 'getS3MigrationSummary',
-                'summary': 'Preview migration impact',
-                'description': 'Returns how many existing stored s3:// URLs would be rewritten to public AWS_URL-based URLs, plus a small sample.',
+                'summary': 'Preview migration impact [deprecated]',
+                'description': 'Deprecated compatibility summary endpoint. Use POST /api/s3/url-migration-jobs with dry_run=true as the canonical preview flow.',
+                'deprecated': True,
                 'security': [{'bearerAuth': []}],
                 'responses': {
                     '200': {
                         'description': 'Migration impact summary.',
-                        'content': {'application/json': {'schema': {'type': 'object', 'properties': {'data': {'$ref': '#/components/schemas/S3MigrationSummary'}}}}},
+                        'content': {'application/json': {'schema': {'type': 'object', 'properties': {'data': {'$ref': '#/components/schemas/S3UrlMigrationSummary'}}}}},
                     },
                     '400': {'$ref': '#/components/responses/BadRequest'},
                     '401': {'$ref': '#/components/responses/Unauthorized'},
                 },
             }
         },
-        '/api/s3/migration-jobs': {
+        '/api/s3/url-migration-jobs': {
+            'get': {
+                'tags': ['s3'],
+                'operationId': 'listS3UrlMigrationJobs',
+                'summary': 'List URL migration jobs',
+                'description': 'Returns only URL migration job history plus the effective non-secret config.',
+                'security': [{'bearerAuth': []}],
+                'responses': {
+                    '200': {
+                        'description': 'URL migration jobs list.',
+                        'content': {'application/json': {'schema': {'$ref': '#/components/schemas/S3JobsListResponse'}}},
+                    },
+                    '401': {'$ref': '#/components/responses/Unauthorized'},
+                },
+            },
             'post': {
                 'tags': ['s3'],
-                'operationId': 'createS3MigrationJob',
-                'summary': 'Create migration job',
-                'description': 'Starts a background job that converts existing stored s3:// URLs into public AWS_URL-based URLs.',
+                'operationId': 'createS3UrlMigrationJob',
+                'summary': 'Create URL migration job',
+                'description': 'Starts a URL migration job, or a dry-run preview when dry_run=true.',
                 'security': [{'bearerAuth': []}],
                 'requestBody': {
                     'required': False,
                     'content': {
                         'application/json': {
-                            'schema': {'$ref': '#/components/schemas/S3MigrationJobCreateRequest'},
+                            'schema': {'$ref': '#/components/schemas/S3UrlMigrationJobCreateRequest'},
                         }
                     },
                 },
                 'responses': {
                     '202': {
-                        'description': 'Migration job created.',
+                        'description': 'URL migration job created.',
                         'content': {'application/json': {'schema': {'$ref': '#/components/schemas/S3JobAcceptedResponse'}}},
                     },
                     '400': {'$ref': '#/components/responses/BadRequest'},
@@ -1108,31 +1131,46 @@ OPENAPI_SPEC = {
             'get': {
                 'tags': ['s3'],
                 'operationId': 'getS3CleanupSummary',
-                'summary': 'Preview stale S3-state cleanup impact',
-                'description': 'Returns how many saved-on-S3 records would be cleared by the stale-state cleanup, plus a small sample.',
+                'summary': 'Preview stale S3-state cleanup impact [deprecated]',
+                'description': 'Deprecated compatibility summary endpoint. Use POST /api/s3/state-cleanup-jobs with dry_run=true as the canonical preview flow.',
+                'deprecated': True,
                 'security': [{'bearerAuth': []}],
                 'responses': {
                     '200': {
                         'description': 'Cleanup impact summary.',
-                        'content': {'application/json': {'schema': {'type': 'object', 'properties': {'data': {'$ref': '#/components/schemas/S3CleanupSummary'}}}}},
+                        'content': {'application/json': {'schema': {'type': 'object', 'properties': {'data': {'$ref': '#/components/schemas/S3StateCleanupSummary'}}}}},
                     },
                     '400': {'$ref': '#/components/responses/BadRequest'},
                     '401': {'$ref': '#/components/responses/Unauthorized'},
                 },
             }
         },
-        '/api/s3/cleanup-jobs': {
+        '/api/s3/state-cleanup-jobs': {
+            'get': {
+                'tags': ['s3'],
+                'operationId': 'listS3StateCleanupJobs',
+                'summary': 'List stale-state cleanup jobs',
+                'description': 'Returns only stale-state cleanup job history plus the effective non-secret config.',
+                'security': [{'bearerAuth': []}],
+                'responses': {
+                    '200': {
+                        'description': 'Cleanup jobs list.',
+                        'content': {'application/json': {'schema': {'$ref': '#/components/schemas/S3JobsListResponse'}}},
+                    },
+                    '401': {'$ref': '#/components/responses/Unauthorized'},
+                },
+            },
             'post': {
                 'tags': ['s3'],
-                'operationId': 'createS3CleanupJob',
+                'operationId': 'createS3StateCleanupJob',
                 'summary': 'Create stale-state cleanup job',
-                'description': 'Starts a background job that clears saved-on-S3 state for stale records after bucket/access changes.',
+                'description': 'Starts a stale-state cleanup job, or a dry-run preview when dry_run=true.',
                 'security': [{'bearerAuth': []}],
                 'requestBody': {
                     'required': False,
                     'content': {
                         'application/json': {
-                            'schema': {'$ref': '#/components/schemas/S3CleanupJobCreateRequest'},
+                            'schema': {'$ref': '#/components/schemas/S3StateCleanupJobCreateRequest'},
                         }
                     },
                 },
@@ -1252,7 +1290,77 @@ def _publicize_job_payload(job: dict | None) -> dict | None:
     out = dict(job)
     if isinstance(out.get('items'), list):
         out['items'] = [_publicize_job_item(item) for item in out.get('items')]
+    metadata = normalize_job_metadata(
+        kind=out.get('kind'),
+        job_family=out.get('job_family'),
+        dry_run=out.get('dry_run'),
+    )
+    out['job_family'] = metadata['job_family']
+    out['dry_run'] = metadata['dry_run']
+    out['kind'] = metadata['kind']
     return out
+
+
+def persist_upload_job_item(*, dataset_id: str, bucket: str, row: dict[str, Any], item: dict[str, Any]) -> None:
+    state_conn = db_connect()
+    try:
+        load_s3_state(conn=state_conn, force=True)
+        goods_id = normalize_goods_id(dataset_id, row.get('id'))
+        source_urls = [str(url).strip() for url in (item.get('source_urls') or []) if isinstance(url, str) and str(url).strip()]
+        image_pairs = []
+        cfg = effective_s3_config()
+        ep = cfg.get('endpoint_url')
+        rg = cfg.get('region_name')
+        for pair in item.get('image_pairs') or []:
+            if not isinstance(pair, dict):
+                continue
+            source_url = str(pair.get('source_url') or '').strip()
+            raw_s3_url = str(pair.get('s3_url') or '').strip()
+            if not source_url or not raw_s3_url:
+                continue
+            public_s3 = s3_to_public_url(raw_s3_url, ep, rg)
+            image_pairs.append({
+                'source_url': source_url,
+                's3_url': public_s3,
+                'key': pair.get('key'),
+                'status': pair.get('status'),
+            })
+        S3_STATE.setdefault('objects', {})[goods_id] = {
+            'dataset_id': dataset_id,
+            'product_id': str(row.get('id')),
+            'goods_id': goods_id,
+            'source_url': source_urls[0] if source_urls else None,
+            's3_url': image_pairs[0]['s3_url'] if image_pairs else None,
+            'bucket': bucket,
+            'key': image_pairs[0].get('key') if image_pairs else None,
+            'source_image_urls': source_urls,
+            's3_image_urls': [pair['s3_url'] for pair in image_pairs],
+            'image_pairs': image_pairs,
+            'source_image_count': len(source_urls),
+            's3_image_count': len(image_pairs),
+            'failed_image_count': int(item.get('image_failed') or 0),
+            'saved_on_s3': bool(item.get('saved_on_s3')),
+            'saved_at': time.time(),
+        }
+        save_s3_state(conn=state_conn)
+    finally:
+        state_conn.close()
+
+
+def make_s3_job_context() -> dict[str, Any]:
+    return {
+        'root': ROOT,
+        'allowed_datasets': ALLOWED_DATASETS,
+        'db_connect': db_connect,
+        'effective_s3_config': effective_s3_config,
+        'resolve_aws_public_url': resolve_aws_public_url,
+        'resolve_aws_bucket': resolve_aws_bucket,
+        'resolve_aws_prefix': resolve_aws_prefix,
+        'resolve_s3_region': resolve_s3_region,
+        'load_s3_state': load_s3_state,
+        'parse_json_list': parse_json_list,
+        'persist_upload_item': persist_upload_job_item,
+    }
 
 
 def _maybe_migrate_legacy_s3_state(conn):
@@ -1328,6 +1436,7 @@ def _maybe_migrate_legacy_s3_jobs(conn):
     for raw_job in _load_legacy_s3_jobs_payload():
         if not isinstance(raw_job, dict) or not raw_job.get('job_id'):
             continue
+        normalized = _publicize_job_payload(raw_job) or raw_job
         conn.execute(
             '''
             INSERT INTO s3_jobs (job_id, payload_json, started_at, updated_at)
@@ -1339,7 +1448,7 @@ def _maybe_migrate_legacy_s3_jobs(conn):
             ''',
             (
                 str(raw_job.get('job_id')),
-                json.dumps(raw_job, ensure_ascii=False, separators=(',', ':')),
+                json.dumps(normalized, ensure_ascii=False, separators=(',', ':')),
                 float(raw_job.get('started_at') or time.time()),
                 time.time(),
             ),
@@ -1832,7 +1941,7 @@ def _load_s3_jobs_from_db() -> list[dict]:
         payloads = []
         for row in rows:
             try:
-                payloads.append(json.loads(row['payload_json']))
+                payloads.append(_publicize_job_payload(json.loads(row['payload_json'])))
             except Exception:
                 continue
         return payloads
@@ -1853,6 +1962,7 @@ def _save_s3_jobs_to_db(jobs: list[dict]) -> None:
                     continue
                 job_id = str(raw_job.get('job_id'))
                 seen.add(job_id)
+                normalized = _publicize_job_payload(raw_job) or raw_job
                 conn.execute(
                     '''
                     INSERT INTO s3_jobs (job_id, payload_json, started_at, updated_at)
@@ -1864,7 +1974,7 @@ def _save_s3_jobs_to_db(jobs: list[dict]) -> None:
                     ''',
                     (
                         job_id,
-                        json.dumps(raw_job, ensure_ascii=False, separators=(',', ':')),
+                        json.dumps(normalized, ensure_ascii=False, separators=(',', ':')),
                         float(raw_job.get('started_at') or now),
                         now,
                     ),
@@ -1932,15 +2042,9 @@ class Handler(SimpleHTTPRequestHandler):
                 return html_response(self, content)
             if parsed.path == '/api/s3/auth-check':
                 return json_response(self, {'data': {'authenticated': auth_required(self)}})
-            if parsed.path == '/api/s3/migration-summary' and not s3_access_is_valid(self):
-                return s3_admin_required_response(self)
-            if parsed.path == '/api/s3/cleanup-summary' and not s3_access_is_valid(self):
-                return s3_admin_required_response(self)
             if parsed.path == '/api/s3/config' and not s3_access_is_valid(self):
                 return s3_admin_required_response(self)
-            if parsed.path == '/api/s3/jobs' and not s3_access_is_valid(self):
-                return s3_admin_required_response(self)
-            if parsed.path.startswith('/api/s3/jobs/') and not s3_access_is_valid(self):
+            if parsed.path.startswith('/api/s3/') and parsed.path != '/api/s3/auth' and not s3_access_is_valid(self):
                 return s3_admin_required_response(self)
             if parsed.path == '/api/s3/auth':
                 return self.handle_s3_auth()
@@ -1956,17 +2060,21 @@ class Handler(SimpleHTTPRequestHandler):
             if parsed.path.startswith('/api/products/'):
                 goods_id = parsed.path.split('/api/products/', 1)[1].strip('/')
                 return self.handle_product(goods_id, parsed.query)
-            if parsed.path == '/api/s3/jobs':
-                return self.handle_s3_jobs_list()
+            if parsed.path == '/api/s3/config':
+                return self.handle_s3_config_get()
+            if parsed.path == '/api/s3/upload-jobs':
+                return self.handle_s3_family_jobs_list(UPLOAD_JOB_FAMILY)
+            if parsed.path == '/api/s3/url-migration-jobs':
+                return self.handle_s3_family_jobs_list(URL_MIGRATION_JOB_FAMILY)
+            if parsed.path == '/api/s3/state-cleanup-jobs':
+                return self.handle_s3_family_jobs_list(STATE_CLEANUP_JOB_FAMILY)
+            if parsed.path == '/api/s3/migration-summary':
+                return self.handle_s3_family_summary(URL_MIGRATION_JOB_FAMILY)
+            if parsed.path == '/api/s3/cleanup-summary':
+                return self.handle_s3_family_summary(STATE_CLEANUP_JOB_FAMILY)
             if parsed.path.startswith('/api/s3/jobs/'):
                 job_id = parsed.path.split('/api/s3/jobs/', 1)[1].strip('/')
                 return self.handle_s3_job_detail(job_id)
-            if parsed.path == '/api/s3/migration-summary':
-                return self.handle_s3_migration_summary()
-            if parsed.path == '/api/s3/cleanup-summary':
-                return self.handle_s3_cleanup_summary()
-            if parsed.path == '/api/s3/config':
-                return self.handle_s3_config_get()
             return super().do_GET()
         except sqlite3.Error as exc:
             return error_response(self, f'Database error: {exc}', HTTPStatus.INTERNAL_SERVER_ERROR, code='database_error')
@@ -1983,24 +2091,24 @@ class Handler(SimpleHTTPRequestHandler):
                 if not api_token_is_valid(self):
                     return api_unauthorized_response(self)
                 return self.handle_s3_auth()
-            if parsed.path == '/api/s3/jobs':
+            if parsed.path == '/api/s3/upload-jobs':
                 if not api_token_is_valid(self):
                     return api_unauthorized_response(self)
                 if not s3_access_is_valid(self):
                     return s3_admin_required_response(self)
-                return self.handle_s3_jobs_create()
-            if parsed.path == '/api/s3/migration-jobs':
+                return self.handle_s3_family_job_create(UPLOAD_JOB_FAMILY)
+            if parsed.path == '/api/s3/url-migration-jobs':
                 if not api_token_is_valid(self):
                     return api_unauthorized_response(self)
                 if not s3_access_is_valid(self):
                     return s3_admin_required_response(self)
-                return self.handle_s3_migration_job_create()
-            if parsed.path == '/api/s3/cleanup-jobs':
+                return self.handle_s3_family_job_create(URL_MIGRATION_JOB_FAMILY)
+            if parsed.path == '/api/s3/state-cleanup-jobs':
                 if not api_token_is_valid(self):
                     return api_unauthorized_response(self)
                 if not s3_access_is_valid(self):
                     return s3_admin_required_response(self)
-                return self.handle_s3_cleanup_job_create()
+                return self.handle_s3_family_job_create(STATE_CLEANUP_JOB_FAMILY)
             if parsed.path.startswith('/api/s3/jobs/') and parsed.path.endswith('/cancel'):
                 if not api_token_is_valid(self):
                     return api_unauthorized_response(self)
@@ -2435,352 +2543,86 @@ class Handler(SimpleHTTPRequestHandler):
     def handle_s3_config_get(self):
         json_response(self, {'data': effective_s3_config()})
 
-    def handle_s3_jobs_list(self):
+    def _s3_job_definition(self, job_family: str):
+        definition = JOB_DEFINITIONS.get(job_family)
+        if not definition:
+            raise ValueError(f'Unknown S3 job family: {job_family}')
+        return definition
+
+    def handle_s3_family_jobs_list(self, job_family: str):
+        self._s3_job_definition(job_family)
         load_s3_state(force=True)
-        json_response(self, {'data': S3_JOB_MANAGER.list_jobs(), 'config': effective_s3_config()})
+        json_response(self, {
+            'data': [_publicize_job_payload(job) for job in S3_JOB_MANAGER.list_jobs(job_family=job_family)],
+            'config': effective_s3_config(),
+            'job_family': job_family,
+            'family': self._s3_job_definition(job_family).api_meta(),
+        })
+
+    def handle_s3_family_summary(self, job_family: str):
+        definition = self._s3_job_definition(job_family)
+        if not definition.summary_builder:
+            raise ValueError(f'No summary endpoint available for {job_family}')
+        payload = self._read_json_body() if self.headers.get('Content-Length') else {}
+        context = make_s3_job_context()
+        collected = definition.collector(payload, context)
+        json_response(self, {
+            'data': definition.summary_builder(collected, context),
+            'job_family': job_family,
+            'family': definition.api_meta(),
+        })
+
+    def handle_s3_family_job_create(self, job_family: str):
+        definition = self._s3_job_definition(job_family)
+        payload = self._read_json_body() if self.headers.get('Content-Length') else {}
+        dry_run = parse_bool(payload.get('dry_run', payload.get('preview', False)))
+        context = make_s3_job_context()
+        collected = definition.collector(payload, context)
+        dataset_id = str(collected.get('dataset_id') or '').strip()
+        job_id = build_job_id(job_family, dataset_id if dataset_id and dataset_id != 'all' else None)
+        run_spec = definition.runner_builder(job_id, dry_run, collected, context)
+        start_mode = run_spec.get('mode')
+        kwargs = dict(run_spec.get('kwargs') or {})
+        if start_mode == 'start_job':
+            future = S3_JOB_MANAGER.start_job(**kwargs)
+        elif start_mode == 'start_custom_job':
+            future = S3_JOB_MANAGER.start_custom_job(**kwargs)
+        else:
+            raise ValueError(f'Unsupported S3 job runner mode: {start_mode}')
+        json_response(self, {
+            'data': _publicize_job_payload(S3_JOB_MANAGER.get_job(job_id)),
+            'future': bool(future),
+            'job_family': job_family,
+            'family': definition.api_meta(),
+        }, status=HTTPStatus.ACCEPTED)
+
+    def handle_s3_jobs_list(self):
+        return self.handle_s3_family_jobs_list(UPLOAD_JOB_FAMILY)
 
     def handle_s3_jobs_create(self):
-        payload = self._read_json_body()
-        dataset_id = (payload.get('dataset_id') or 'shein').strip().lower()
-        source = (payload.get('source') or 'products').strip().lower()
-        limit = parse_positive_int(payload.get('limit', 100), 100)
-        concurrency = parse_positive_int(payload.get('concurrency', 4), 4, maximum=24)
-        if dataset_id == 'asos':
-            concurrency = min(concurrency, 2)
-        config = effective_s3_config()
-        bucket = str(config.get('bucket') or '').strip()
-        prefix = str(config.get('prefix') or '').strip()
-        if dataset_id not in ALLOWED_DATASETS:
-            raise ValueError(f'Unknown dataset: {dataset_id}')
-        if not bucket:
-            raise ValueError('Missing AWS_BUCKET')
-        conn = db_connect()
-        rows = conn.execute('SELECT * FROM products WHERE dataset_id = ? ORDER BY id ASC', (dataset_id,)).fetchall()
-        selected = [dict(row) for row in rows[:limit]]
-        job_id = f'{dataset_id}-{int(time.time())}'
-
-        def s3_client_factory():
-            import boto3
-            from botocore.config import Config
-
-            env_access_key = os.getenv('AWS_ACCESS_KEY_ID') or os.getenv('AWS_ACCESS_KEY')
-            env_secret_key = os.getenv('AWS_SECRET_ACCESS_KEY') or os.getenv('AWS_SECRET_KEY')
-            endpoint_url = config.get('endpoint_url') or None
-            env_session_token = os.getenv('AWS_SESSION_TOKEN')
-            if endpoint_url and 'r2.cloudflarestorage.com' in endpoint_url.lower():
-                env_session_token = None
-            session = boto3.session.Session(
-                aws_access_key_id=env_access_key or None,
-                aws_secret_access_key=env_secret_key or None,
-                aws_session_token=env_session_token or None,
-                region_name=resolve_s3_region(endpoint_url, config.get('region_name')),
-            )
-            client_kwargs = {
-                'endpoint_url': endpoint_url,
-            }
-            if endpoint_url:
-                client_kwargs['config'] = Config(s3={'addressing_style': 'path'})
-            return session.client('s3', **client_kwargs)
-
-        def resolve_source_url(row):
-            candidates = []
-            for url in [row.get('image')] + parse_json_list(row.get('image_urls_json')):
-                if not isinstance(url, str):
-                    continue
-                cleaned = url.strip()
-                if not cleaned:
-                    continue
-                lowered = cleaned.lower()
-                if lowered.startswith(('http://', 'https://')):
-                    candidates.append(cleaned)
-            return candidates
-
-        def on_uploaded(row, item):
-            state_conn = db_connect()
-            try:
-                load_s3_state(conn=state_conn, force=True)
-                goods_id = normalize_goods_id(dataset_id, row.get('id'))
-                source_urls = [str(url).strip() for url in (item.get('source_urls') or []) if isinstance(url, str) and str(url).strip()]
-                image_pairs = []
-                # convert s3:// URLs to public URLs according to current env-driven config
-                cfg = effective_s3_config()
-                ep = cfg.get('endpoint_url')
-                rg = cfg.get('region_name')
-                for pair in item.get('image_pairs') or []:
-                    if not isinstance(pair, dict):
-                        continue
-                    source_url = str(pair.get('source_url') or '').strip()
-                    raw_s3_url = str(pair.get('s3_url') or '').strip()
-                    if not source_url or not raw_s3_url:
-                        continue
-                    public_s3 = s3_to_public_url(raw_s3_url, ep, rg)
-                    image_pairs.append({
-                        'source_url': source_url,
-                        's3_url': public_s3,
-                        'key': pair.get('key'),
-                        'status': pair.get('status'),
-                    })
-                S3_STATE.setdefault('objects', {})[goods_id] = {
-                    'dataset_id': dataset_id,
-                    'product_id': str(row.get('id')),
-                    'goods_id': goods_id,
-                    'source_url': source_urls[0] if source_urls else None,
-                    's3_url': image_pairs[0]['s3_url'] if image_pairs else None,
-                    'bucket': bucket,
-                    'key': image_pairs[0].get('key') if image_pairs else None,
-                    'source_image_urls': source_urls,
-                    's3_image_urls': [pair['s3_url'] for pair in image_pairs],
-                    'image_pairs': image_pairs,
-                    'source_image_count': len(source_urls),
-                    's3_image_count': len(image_pairs),
-                    'failed_image_count': int(item.get('image_failed') or 0),
-                    'saved_on_s3': bool(item.get('saved_on_s3')),
-                    'saved_at': time.time(),
-                }
-                save_s3_state(conn=state_conn)
-            finally:
-                state_conn.close()
-
-        conn.close()
-        future = S3_JOB_MANAGER.start_job(
-            job_id=job_id,
-            dataset_id=dataset_id,
-            source=source,
-            bucket=bucket,
-            prefix=prefix,
-            limit=limit,
-            concurrency=concurrency,
-            source_filter=payload.get('source_filter'),
-            rows=selected,
-            s3_client_factory=s3_client_factory,
-            resolve_source_url=resolve_source_url,
-            on_uploaded=on_uploaded,
-        )
-        json_response(self, {'data': S3_JOB_MANAGER.get_job(job_id), 'future': bool(future)}, status=HTTPStatus.ACCEPTED)
+        return self.handle_s3_family_job_create(UPLOAD_JOB_FAMILY)
 
     def handle_s3_migration_summary(self):
-        public_url = resolve_aws_public_url().strip()
-        if not public_url:
-            raise ValueError('Missing AWS_URL')
-        conn = db_connect()
-        try:
-            changes = migrate_collect_changes(conn, public_url)
-        finally:
-            conn.close()
-        sample_limit = 10
-        json_response(self, {
-            'data': {
-                'total': len(changes),
-                'sample_limit': sample_limit,
-                'public_url': public_url,
-                'sample': [
-                    {
-                        'goods_id': change['goods_id'],
-                        'old_s3_url': change['old_s3_url'],
-                        'new_s3_url': change['new_s3_url'],
-                        'changed_fields': change['changed_fields'],
-                    }
-                    for change in changes[:sample_limit]
-                ],
-            }
-        })
+        return self.handle_s3_family_summary(URL_MIGRATION_JOB_FAMILY)
 
     def handle_s3_cleanup_summary(self):
-        bucket = resolve_aws_bucket().strip()
-        conn = db_connect()
-        try:
-            changes = s3_cleanup_collect(conn, bucket=bucket)
-        finally:
-            conn.close()
-        sample_limit = 10
-        json_response(self, {
-            'data': {
-                'total': len(changes),
-                'sample_limit': sample_limit,
-                'current_bucket': bucket or None,
-                'sample': [
-                    {
-                        'goods_id': change['goods_id'],
-                        'bucket': change['bucket'],
-                        'current_bucket': change['current_bucket'],
-                        's3_url': change['s3_url'],
-                        'reason': change['reason'],
-                    }
-                    for change in changes[:sample_limit]
-                ],
-            }
-        })
-
-    def handle_s3_migration_job_create(self):
-        payload = self._read_json_body()
-        preview = bool(payload.get('preview', False))
-        sample_limit = parse_positive_int(payload.get('sample_limit', 25), 25, maximum=200)
-        public_url = resolve_aws_public_url().strip()
-        if not public_url:
-            raise ValueError('Missing AWS_URL')
-
-        conn = db_connect()
-        try:
-            changes = migrate_collect_changes(conn, public_url)
-        finally:
-            conn.close()
-
-        job_id = f"migration-{int(time.time())}"
-
-        def runner(record_item, cancel_event):
-            run_conn = db_connect()
-            try:
-                run_conn.row_factory = sqlite3.Row
-                local_changes = migrate_collect_changes(run_conn, public_url)
-                if preview:
-                    for change in local_changes[:sample_limit]:
-                        if cancel_event.is_set():
-                            break
-                        record_item({
-                            'status': 'skipped',
-                            'message': 'Preview migration item',
-                            'timestamp': time.time(),
-                            'goods_id': change['goods_id'],
-                            'kind': 'migration_preview',
-                            'old_s3_url': change['old_s3_url'],
-                            'new_s3_url': change['new_s3_url'],
-                            'changed_fields': change['changed_fields'],
-                        })
-                    return
-
-                backup_path = ROOT / f"s3_objects_backup_{int(time.time())}.json"
-                migrate_write_backup(run_conn, backup_path)
-
-                now = time.time()
-                for change in local_changes:
-                    if cancel_event.is_set():
-                        raise RuntimeError('Migration cancelled')
-                    run_conn.execute(
-                        "UPDATE s3_objects SET s3_url = ?, s3_image_urls_json = ?, image_pairs_json = ?, updated_at = ? WHERE goods_id = ?",
-                        (
-                            change['new_s3_url'],
-                            json.dumps(change['new_urls'], ensure_ascii=False),
-                            json.dumps(change['new_pairs'], ensure_ascii=False),
-                            now,
-                            change['goods_id'],
-                        ),
-                    )
-                    run_conn.commit()
-                    record_item({
-                        'status': 'uploaded',
-                        'message': 'Migrated stored URLs to AWS_URL',
-                        'timestamp': time.time(),
-                        'goods_id': change['goods_id'],
-                        'kind': 'migration',
-                        'old_s3_url': change['old_s3_url'],
-                        'new_s3_url': change['new_s3_url'],
-                        'changed_fields': change['changed_fields'],
-                        'backup_path': str(backup_path),
-                    })
-                load_s3_state(force=True)
-            finally:
-                run_conn.close()
-
-        future = S3_JOB_MANAGER.start_custom_job(
-            job_id=job_id,
-            dataset_id='all',
-            source='migration',
-            kind='migration_preview' if preview else 'migration',
-            total=min(len(changes), sample_limit) if preview else len(changes),
-            runner=runner,
-            bucket=resolve_aws_bucket() or None,
-            prefix=resolve_aws_prefix() or '',
-            concurrency=1,
-            limit=min(len(changes), sample_limit) if preview else len(changes),
-        )
-        json_response(self, {'data': S3_JOB_MANAGER.get_job(job_id), 'future': bool(future)}, status=HTTPStatus.ACCEPTED)
-
-    def handle_s3_cleanup_job_create(self):
-        payload = self._read_json_body() if self.headers.get('Content-Length') else {}
-        preview = parse_bool(payload.get('preview', False))
-        sample_limit = parse_positive_int(payload.get('sample_limit', 25), 25, maximum=200)
-        bucket = resolve_aws_bucket().strip()
-
-        conn = db_connect()
-        try:
-            changes = s3_cleanup_collect(conn, bucket=bucket)
-        finally:
-            conn.close()
-
-        job_id = f"cleanup-{int(time.time())}"
-
-        def runner(record_item, cancel_event):
-            run_conn = db_connect()
-            try:
-                run_conn.row_factory = sqlite3.Row
-                local_changes = s3_cleanup_collect(run_conn, bucket=bucket)
-                if preview:
-                    for change in local_changes[:sample_limit]:
-                        if cancel_event.is_set():
-                            break
-                        record_item({
-                            'status': 'skipped',
-                            'message': 'Preview stale S3-state cleanup item',
-                            'timestamp': time.time(),
-                            'goods_id': change['goods_id'],
-                            'kind': 'cleanup_preview',
-                            'bucket': change['bucket'],
-                            'current_bucket': change['current_bucket'],
-                            's3_url': change['s3_url'],
-                            'reason': change['reason'],
-                        })
-                    return
-
-                backup_path = ROOT / f"s3_objects_cleanup_backup_{int(time.time())}.json"
-                s3_cleanup_write_backup(run_conn, backup_path)
-
-                def on_progress(change):
-                    record_item({
-                        'status': 'uploaded',
-                        'message': 'Cleared stale saved_on_s3 state',
-                        'timestamp': time.time(),
-                        'goods_id': change['goods_id'],
-                        'kind': 'cleanup',
-                        'bucket': change['bucket'],
-                        'current_bucket': change['current_bucket'],
-                        's3_url': change['s3_url'],
-                        'reason': change['reason'],
-                        'backup_path': str(backup_path),
-                    })
-
-                for change in local_changes:
-                    if cancel_event.is_set():
-                        raise RuntimeError('Cleanup cancelled')
-                s3_cleanup_apply(run_conn, local_changes, progress_cb=on_progress)
-                load_s3_state(force=True)
-            finally:
-                run_conn.close()
-
-        future = S3_JOB_MANAGER.start_custom_job(
-            job_id=job_id,
-            dataset_id='all',
-            source='cleanup',
-            kind='cleanup_preview' if preview else 'cleanup',
-            total=min(len(changes), sample_limit) if preview else len(changes),
-            runner=runner,
-            bucket=bucket or None,
-            prefix=resolve_aws_prefix() or '',
-            concurrency=1,
-            limit=min(len(changes), sample_limit) if preview else len(changes),
-        )
-        json_response(self, {'data': S3_JOB_MANAGER.get_job(job_id), 'future': bool(future)}, status=HTTPStatus.ACCEPTED)
+        return self.handle_s3_family_summary(STATE_CLEANUP_JOB_FAMILY)
 
     def handle_s3_job_cancel(self, job_id):
-        if not S3_JOB_MANAGER.cancel_job(job_id):
-            return error_response(self, f'Job not found: {job_id}', HTTPStatus.NOT_FOUND, code='not_found')
-        json_response(self, {'data': S3_JOB_MANAGER.get_job(job_id)}, status=HTTPStatus.ACCEPTED)
-
-    def handle_s3_job_detail(self, job_id):
-        load_s3_state(force=True)
         job = S3_JOB_MANAGER.get_job(job_id)
         if not job:
             return error_response(self, f'Job not found: {job_id}', HTTPStatus.NOT_FOUND, code='not_found')
-        job = _publicize_job_payload(job)
+        if job.get('status') not in ACTIVE_JOB_STATUSES:
+            return error_response(self, f'Job is not active: {job_id}', HTTPStatus.BAD_REQUEST, code='invalid_request')
+        if not S3_JOB_MANAGER.cancel_job(job_id):
+            return error_response(self, f'Job not found: {job_id}', HTTPStatus.NOT_FOUND, code='not_found')
+        json_response(self, {'data': _publicize_job_payload(S3_JOB_MANAGER.get_job(job_id))}, status=HTTPStatus.ACCEPTED)
+
+    def handle_s3_job_detail(self, job_id):
+        load_s3_state(force=True)
+        job = _publicize_job_payload(S3_JOB_MANAGER.get_job(job_id))
+        if not job:
+            return error_response(self, f'Job not found: {job_id}', HTTPStatus.NOT_FOUND, code='not_found')
         query = parse_qs(urlparse(self.path).query)
         page = parse_positive_int((query.get('page') or ['1'])[0], 1)
         page_size = parse_positive_int((query.get('page_size') or ['12'])[0], 12, maximum=50)

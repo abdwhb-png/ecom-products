@@ -1314,7 +1314,14 @@ select[disabled] {
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  align-items: center;
+  align-items: flex-start;
+}
+
+.s3-job-header-pills {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .s3-job-meta {
@@ -1342,7 +1349,12 @@ select[disabled] {
 .job-completed { background: rgba(52, 211, 153, 0.16); color: #bbf7d0; }
 .job-failed { background: rgba(244, 114, 182, 0.16); color: #f9a8d4; }
 .job-partial { background: rgba(251, 191, 36, 0.16); color: #fde68a; }
-.job-migration { background: rgba(168, 85, 247, 0.18); color: #e9d5ff; border-color: rgba(168, 85, 247, 0.28); text-transform: uppercase; letter-spacing: 0.04em; }
+.job-preview { background: rgba(45, 212, 191, 0.16); color: #ccfbf1; border-color: rgba(45, 212, 191, 0.24); }
+.job-dry-run { background: rgba(56, 189, 248, 0.14); color: #bae6fd; border-color: rgba(56, 189, 248, 0.24); text-transform: uppercase; letter-spacing: 0.06em; }
+.job-family { text-transform: uppercase; letter-spacing: 0.04em; }
+.job-family-upload { background: rgba(59, 130, 246, 0.16); color: #bfdbfe; border-color: rgba(59, 130, 246, 0.24); }
+.job-family-url_migration { background: rgba(168, 85, 247, 0.18); color: #e9d5ff; border-color: rgba(168, 85, 247, 0.28); }
+.job-family-state_cleanup { background: rgba(244, 114, 182, 0.16); color: #fbcfe8; border-color: rgba(244, 114, 182, 0.22); }
 
 .s3-job-empty { color: var(--muted); padding: 10px 0; }
 
@@ -1749,6 +1761,10 @@ select[disabled] {
 
 .s3-job-empty-details {
   color: var(--muted);
+}
+
+.hidden {
+  display: none !important;
 }
 
 @media (max-width: 1100px) {

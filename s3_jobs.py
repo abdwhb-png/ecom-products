@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import socket
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -10,7 +11,8 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
-import socket
+
+from s3_job_operations import UPLOAD_JOB_FAMILY, normalize_job_metadata
 
 try:
     import boto3
@@ -20,6 +22,8 @@ except Exception:  # pragma: no cover
 
 ACTIVE_JOB_STATUSES = {'queued', 'running', 'cancel_requested'}
 DEFAULT_HISTORY_LIMIT = 200
+PARTIAL_UPLOAD_STATUS = 'partial'
+PREVIEW_ITEM_STATUS = 'preview'
 
 
 @dataclass
@@ -44,13 +48,12 @@ class S3JobState:
     source_filter: str | None = None
     last_message: str | None = None
     items: list[dict[str, Any]] | None = None
+    job_family: str = UPLOAD_JOB_FAMILY
+    dry_run: bool = False
     kind: str = 'upload'
 
 
 JOB_STATE_FIELDS = {field.name for field in fields(S3JobState)}
-
-
-PARTIAL_UPLOAD_STATUS = 'partial'
 
 
 class S3JobManager:
@@ -71,20 +74,38 @@ class S3JobManager:
         self._save_jobs_fn = save_jobs_fn
         self._load_jobs()
 
-    def list_jobs(self):
+    def list_jobs(self, job_family: str | None = None):
         with self._mutex:
-            return [asdict(job) for job in self._sorted_jobs_unlocked()]
+            jobs = self._sorted_jobs_unlocked()
+            if job_family:
+                jobs = [job for job in jobs if job.job_family == job_family]
+            return [asdict(job) for job in jobs]
 
     def get_job(self, job_id: str):
         with self._mutex:
             job = self._jobs.get(job_id)
             return asdict(job) if job else None
 
-    def start_job(self, *, job_id: str, dataset_id: str, source: str, bucket: str, prefix: str = '', limit: int = 100, concurrency: int = 4, source_filter: str | None = None, rows: list[dict[str, Any]], s3_client_factory=None, resolve_source_url=None, on_uploaded=None):
+    def start_job(
+        self,
+        *,
+        job_id: str,
+        dataset_id: str,
+        source: str,
+        bucket: str,
+        prefix: str = '',
+        limit: int = 100,
+        concurrency: int = 4,
+        source_filter: str | None = None,
+        rows: list[dict[str, Any]],
+        s3_client_factory=None,
+        resolve_source_url=None,
+        on_uploaded=None,
+        dry_run: bool = False,
+        job_family: str = UPLOAD_JOB_FAMILY,
+    ):
         with self._mutex:
-            if job_id in self._jobs and self._jobs[job_id].status in ACTIVE_JOB_STATUSES:
-                raise ValueError(f'Job already running: {job_id}')
-            job = S3JobState(
+            self._create_job_unlocked(
                 job_id=job_id,
                 dataset_id=dataset_id,
                 source=source,
@@ -94,19 +115,14 @@ class S3JobManager:
                 concurrency=max(1, int(concurrency)),
                 source_filter=source_filter,
                 total=min(len(rows), max(1, int(limit))),
-                status='running',
-                started_at=time.time(),
-                items=[],
-                kind='upload',
+                job_family=job_family,
+                dry_run=dry_run,
             )
-            self._jobs[job_id] = job
-            self._locks[job_id] = threading.Event()
-            self._persist_jobs_best_effort_unlocked()
 
         future = self._executor.submit(
             self._run_job,
             job_id,
-            rows[: job.limit],
+            rows[: max(1, int(limit))],
             s3_client_factory,
             resolve_source_url,
             on_uploaded,
@@ -119,7 +135,6 @@ class S3JobManager:
         job_id: str,
         dataset_id: str,
         source: str,
-        kind: str,
         total: int,
         runner: Callable[[Callable[[dict[str, Any]], None], threading.Event], None],
         bucket: str | None = None,
@@ -127,11 +142,12 @@ class S3JobManager:
         concurrency: int = 1,
         source_filter: str | None = None,
         limit: int | None = None,
+        dry_run: bool = False,
+        job_family: str = UPLOAD_JOB_FAMILY,
+        kind: str | None = None,
     ):
         with self._mutex:
-            if job_id in self._jobs and self._jobs[job_id].status in ACTIVE_JOB_STATUSES:
-                raise ValueError(f'Job already running: {job_id}')
-            job = S3JobState(
+            self._create_job_unlocked(
                 job_id=job_id,
                 dataset_id=dataset_id,
                 source=source,
@@ -141,15 +157,11 @@ class S3JobManager:
                 concurrency=max(1, int(concurrency or 1)),
                 source_filter=source_filter,
                 total=max(0, int(total or 0)),
-                status='running',
-                started_at=time.time(),
-                items=[],
+                job_family=job_family,
+                dry_run=dry_run,
                 kind=kind,
             )
-            self._jobs[job_id] = job
-            cancel_event = threading.Event()
-            self._locks[job_id] = cancel_event
-            self._persist_jobs_best_effort_unlocked()
+            cancel_event = self._locks[job_id]
 
         future = self._executor.submit(self._run_custom_job, job_id, runner, cancel_event)
         return future
@@ -157,7 +169,7 @@ class S3JobManager:
     def cancel_job(self, job_id: str):
         with self._mutex:
             job = self._jobs.get(job_id)
-            if not job:
+            if not job or job.status not in ACTIVE_JOB_STATUSES:
                 return False
             job.cancel_requested = True
             job.status = 'cancel_requested'
@@ -167,30 +179,74 @@ class S3JobManager:
             self._persist_jobs_best_effort_unlocked()
             return True
 
-    def _run_custom_job(self, job_id: str, runner: Callable[[Callable[[dict[str, Any]], None], threading.Event], None], cancel_event: threading.Event):
-        with self._mutex:
-            job = self._jobs[job_id]
+    def _create_job_unlocked(
+        self,
+        *,
+        job_id: str,
+        dataset_id: str,
+        source: str,
+        bucket: str | None,
+        prefix: str | None,
+        limit: int,
+        concurrency: int,
+        source_filter: str | None,
+        total: int,
+        job_family: str,
+        dry_run: bool,
+        kind: str | None = None,
+    ) -> S3JobState:
+        existing = self._jobs.get(job_id)
+        if existing and existing.status in ACTIVE_JOB_STATUSES:
+            raise ValueError(f'Job already running: {job_id}')
+        metadata = normalize_job_metadata(kind=kind, job_family=job_family, dry_run=dry_run)
+        job = S3JobState(
+            job_id=job_id,
+            dataset_id=dataset_id,
+            source=source,
+            bucket=bucket,
+            prefix=prefix,
+            limit=max(1, int(limit)),
+            concurrency=max(1, int(concurrency)),
+            source_filter=source_filter,
+            total=max(0, int(total or 0)),
+            status='running',
+            started_at=time.time(),
+            items=[],
+            job_family=metadata['job_family'],
+            dry_run=metadata['dry_run'],
+            kind=metadata['kind'],
+        )
+        self._jobs[job_id] = job
+        self._locks[job_id] = threading.Event()
+        self._persist_jobs_best_effort_unlocked()
+        return job
 
+    def _record_item_unlocked(self, current: S3JobState, item: dict[str, Any]):
+        current.processed += 1
+        if current.items is None:
+            current.items = []
+        current.items.append(item)
+        status = str(item.get('status') or '').lower()
+        if status == 'uploaded':
+            current.uploaded += 1
+        elif status == 'skipped':
+            current.skipped += 1
+        elif status == PARTIAL_UPLOAD_STATUS:
+            current.uploaded += 1
+        elif status == PREVIEW_ITEM_STATUS and current.dry_run:
+            current.uploaded += 1
+        else:
+            current.failed += 1
+        message = item.get('message')
+        if message:
+            current.last_message = str(message)
+        self._persist_jobs_best_effort_unlocked()
+
+    def _run_custom_job(self, job_id: str, runner: Callable[[Callable[[dict[str, Any]], None], threading.Event], None], cancel_event: threading.Event):
         def record(item: dict[str, Any]):
             with self._mutex:
                 current = self._jobs[job_id]
-                current.processed += 1
-                if current.items is None:
-                    current.items = []
-                current.items.append(item)
-                status = str(item.get('status') or '').lower()
-                if status == 'uploaded':
-                    current.uploaded += 1
-                elif status == 'skipped':
-                    current.skipped += 1
-                elif status == PARTIAL_UPLOAD_STATUS:
-                    current.uploaded += 1
-                else:
-                    current.failed += 1
-                message = item.get('message')
-                if message:
-                    current.last_message = str(message)
-                self._persist_jobs_best_effort_unlocked()
+                self._record_item_unlocked(current, item)
 
         try:
             runner(record, cancel_event)
@@ -225,10 +281,12 @@ class S3JobManager:
         with self._mutex:
             job = self._jobs[job_id]
         try:
-            if boto3 is None:
-                raise RuntimeError('boto3 is not available')
-            s3_client_factory = s3_client_factory or (lambda: boto3.client('s3'))
-            s3 = s3_client_factory()
+            s3 = None
+            if not job.dry_run:
+                if boto3 is None:
+                    raise RuntimeError('boto3 is not available')
+                s3_client_factory = s3_client_factory or (lambda: boto3.client('s3'))
+                s3 = s3_client_factory()
             with ThreadPoolExecutor(max_workers=job.concurrency) as pool:
                 futures = []
                 for row in rows:
@@ -241,55 +299,55 @@ class S3JobManager:
                     try:
                         result = future.result()
                         with self._mutex:
-                            job.processed += 1
+                            current = self._jobs[job_id]
                             if isinstance(result, dict):
-                                if job.items is None:
-                                    job.items = []
-                                job.items.append(result)
-                                if result.get('status') == 'uploaded':
-                                    job.uploaded += 1
-                                elif result.get('status') == 'skipped':
-                                    job.skipped += 1
-                                elif result.get('status') == PARTIAL_UPLOAD_STATUS:
-                                    job.uploaded += 1
-                                else:
-                                    job.failed += 1
-                                job.last_message = result.get('message') or job.last_message
+                                self._record_item_unlocked(current, result)
                             elif result == 'uploaded':
-                                job.uploaded += 1
+                                current.processed += 1
+                                current.uploaded += 1
+                                self._persist_jobs_best_effort_unlocked()
                             elif result == 'skipped':
-                                job.skipped += 1
+                                current.processed += 1
+                                current.skipped += 1
+                                self._persist_jobs_best_effort_unlocked()
                             elif result == PARTIAL_UPLOAD_STATUS:
-                                job.uploaded += 1
+                                current.processed += 1
+                                current.uploaded += 1
+                                self._persist_jobs_best_effort_unlocked()
+                            elif result == PREVIEW_ITEM_STATUS and current.dry_run:
+                                current.processed += 1
+                                current.uploaded += 1
+                                self._persist_jobs_best_effort_unlocked()
                             else:
-                                job.failed += 1
-                            self._persist_jobs_best_effort_unlocked()
+                                current.processed += 1
+                                current.failed += 1
+                                self._persist_jobs_best_effort_unlocked()
                     except Exception as exc:
                         with self._mutex:
-                            job.processed += 1
-                            job.failed += 1
-                            job.last_message = str(exc)
-                            if job.items is None:
-                                job.items = []
-                            job.items.append({
+                            current = self._jobs[job_id]
+                            current.processed += 1
+                            current.failed += 1
+                            current.last_message = str(exc)
+                            if current.items is None:
+                                current.items = []
+                            current.items.append({
                                 'status': 'failed',
                                 'message': str(exc),
                                 'timestamp': time.time(),
                             })
                             self._persist_jobs_best_effort_unlocked()
             with self._mutex:
-                if job.cancel_requested:
-                    job.status = 'cancelled'
-                else:
-                    job.status = 'completed'
-                job.ended_at = time.time()
+                current = self._jobs[job_id]
+                current.status = 'cancelled' if current.cancel_requested else 'completed'
+                current.ended_at = time.time()
                 self._persist_jobs_best_effort_unlocked()
         except Exception as exc:
             with self._mutex:
-                job.status = 'failed'
-                job.error = str(exc)
-                job.last_message = str(exc)
-                job.ended_at = time.time()
+                current = self._jobs[job_id]
+                current.status = 'failed'
+                current.error = str(exc)
+                current.last_message = str(exc)
+                current.ended_at = time.time()
                 self._persist_jobs_best_effort_unlocked()
 
     def _process_row(self, s3, job: S3JobState, row: dict[str, Any], resolve_source_url, on_uploaded):
@@ -317,6 +375,7 @@ class S3JobManager:
         if job.cancel_requested:
             item['message'] = 'Cancelled before processing'
             return item
+        dry_run = bool(getattr(job, 'dry_run', False))
         raw_candidates = resolve_source_url(row) if callable(resolve_source_url) else None
         if isinstance(raw_candidates, (list, tuple)):
             candidates = [str(url).strip() for url in raw_candidates if isinstance(url, str) and url.strip() and str(url).strip().lower().startswith(('http://', 'https://'))]
@@ -331,6 +390,7 @@ class S3JobManager:
             item['source_url'] = candidates[0]
             item['key'] = self._build_key(job, row, candidates[0])
         if not candidates:
+            item['status'] = 'failed'
             item['message'] = 'No source URL available'
             return item
 
@@ -338,7 +398,7 @@ class S3JobManager:
         for source_url in candidates:
             key = self._build_key(job, row, source_url)
             s3_url = f's3://{job.bucket}/{key}'
-            if self._object_exists(s3, job.bucket, key):
+            if s3 is not None and self._object_exists(s3, job.bucket, key):
                 item['image_existing'] += 1
                 item['s3_urls'].append(s3_url)
                 item['s3_keys'].append(key)
@@ -347,6 +407,17 @@ class S3JobManager:
                     's3_url': s3_url,
                     'key': key,
                     'status': 'existing',
+                })
+                continue
+            if dry_run:
+                item['image_uploaded'] += 1
+                item['s3_urls'].append(s3_url)
+                item['s3_keys'].append(key)
+                item['image_pairs'].append({
+                    'source_url': source_url,
+                    's3_url': s3_url,
+                    'key': key,
+                    'status': PREVIEW_ITEM_STATUS,
                 })
                 continue
             try:
@@ -385,6 +456,30 @@ class S3JobManager:
 
         uploaded_or_existing = len(item['s3_urls'])
         item['saved_on_s3'] = bool(candidates) and item['image_failed'] == 0 and uploaded_or_existing == len(candidates)
+        if dry_run:
+            would_upload = item['image_uploaded']
+            if item['saved_on_s3']:
+                item['status'] = PREVIEW_ITEM_STATUS
+                if would_upload and item['image_existing']:
+                    item['message'] = f"Preview: {would_upload} image(s) would be uploaded; {item['image_existing']} already exist on S3"
+                elif would_upload:
+                    item['message'] = f"Preview: {would_upload} image(s) would be uploaded"
+                else:
+                    item['message'] = 'Preview: all product images already exist on S3'
+            elif uploaded_or_existing > 0:
+                item['status'] = PREVIEW_ITEM_STATUS
+                partial_bits = []
+                if would_upload:
+                    partial_bits.append(f"{would_upload} would upload")
+                if item['image_existing']:
+                    partial_bits.append(f"{item['image_existing']} already existed")
+                partial_summary = '; '.join(partial_bits) if partial_bits else f'{uploaded_or_existing} available on S3'
+                item['message'] = f"Preview: partial availability {uploaded_or_existing}/{len(candidates)} image(s); {item['image_failed']} would fail ({partial_summary})"
+            else:
+                item['status'] = 'failed'
+                item['message'] = f'Preview failed: {last_error}' if last_error else 'Preview failed'
+            return item
+
         if item['saved_on_s3']:
             if item['image_uploaded'] and item['image_existing']:
                 item['status'] = 'uploaded'
@@ -408,7 +503,7 @@ class S3JobManager:
             item['status'] = 'failed'
             item['message'] = f'All product image uploads failed: {last_error}' if last_error else 'All product image uploads failed'
 
-        if callable(on_uploaded):
+        if callable(on_uploaded) and not dry_run:
             try:
                 on_uploaded(row, item)
             except Exception as exc:
@@ -523,6 +618,11 @@ class S3JobManager:
         for required in ('job_id', 'dataset_id', 'source', 'limit'):
             if required not in payload or payload.get(required) in {None, ''}:
                 return None
+        metadata = normalize_job_metadata(
+            kind=raw_job.get('kind'),
+            job_family=raw_job.get('job_family'),
+            dry_run=raw_job.get('dry_run'),
+        )
         payload['job_id'] = str(payload['job_id'])
         payload['dataset_id'] = str(payload['dataset_id'])
         payload['source'] = str(payload['source'])
@@ -534,6 +634,9 @@ class S3JobManager:
         payload['total'] = max(0, int(payload.get('total') or 0))
         payload['concurrency'] = max(1, int(payload.get('concurrency') or 1))
         payload['cancel_requested'] = bool(payload.get('cancel_requested'))
+        payload['job_family'] = metadata['job_family']
+        payload['dry_run'] = metadata['dry_run']
+        payload['kind'] = metadata['kind']
         if not isinstance(payload.get('items'), list):
             payload['items'] = [] if payload.get('items') is not None else None
         return S3JobState(**payload)

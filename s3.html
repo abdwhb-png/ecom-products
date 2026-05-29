@@ -4,8 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Fast Fashion Dashboard — S3</title>
-    <link rel="stylesheet" href="./shared-ui.css?v=20260529-2" />
-    <link rel="stylesheet" href="./styles.css?v=20260529-2" />
+    <link rel="stylesheet" href="./shared-ui.css?v=20260529-3" />
+    <link rel="stylesheet" href="./styles.css?v=20260529-3" />
   </head>
   <body>
     <div class="app-shell">
@@ -14,8 +14,8 @@
           <p class="eyebrow">Zone sensible</p>
           <h1>Fast Fashion S3 Control</h1>
           <p class="hero-copy">
-            Upload manuel, suivi d’avancement, arrêt d’un job et paramétrage des lots à traiter.
-            La configuration S3/R2 est maintenant lue directement depuis l’environnement du serveur; la page affiche ces valeurs effectives mais ne les persiste plus.
+            Trois workflows séparés, un même cycle de vie : prévisualiser en dry-run, lancer en écriture,
+            arrêter un job actif, inspecter le détail, puis relire l’historique par famille.
           </p>
         </div>
         <div class="hero-stats">
@@ -28,7 +28,7 @@
             <strong id="activeJobsCount">0</strong>
           </div>
           <div class="stat-card">
-            <span class="stat-label">Dernière config</span>
+            <span class="stat-label">Bucket actif</span>
             <strong id="s3ConfigState">—</strong>
           </div>
         </div>
@@ -57,21 +57,25 @@
           <div class="section-heading">
             <div>
               <p class="eyebrow">Flux de travail</p>
-              <h2>Opérations S3</h2>
-              <p class="muted small">Sépare les uploads d’images des migrations d’URLs existantes. Les deux types de jobs restent visibles dans leur onglet dédié.</p>
+              <h2>Familles de jobs S3</h2>
+              <p class="muted small">Chaque onglet ne montre et n’arrête que ses propres jobs. Les previews sont persistés avec un badge dry-run.</p>
             </div>
             <div class="s3-actions-inline">
               <button id="refreshS3JobsBtn" class="secondary-btn" type="button">Actualiser</button>
             </div>
           </div>
-          <div class="tabs" role="tablist" aria-label="Types de jobs S3">
+          <div class="tabs" role="tablist" aria-label="Familles de jobs S3">
             <button id="uploadTabBtn" class="tab-button is-active" type="button" role="tab" aria-selected="true" data-tab-target="upload">
               <strong>Uploads S3</strong>
               <span>Images produits → bucket</span>
             </button>
-            <button id="migrationTabBtn" class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="migration">
+            <button id="migrationTabBtn" class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="url_migration">
               <strong>Migrations d’URL</strong>
               <span>s3:// → AWS_URL public</span>
+            </button>
+            <button id="cleanupTabBtn" class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="state_cleanup">
+              <strong>Cleanup état S3</strong>
+              <span>Réinitialisation ciblée</span>
             </button>
           </div>
         </section>
@@ -80,8 +84,9 @@
           <section class="s3-panel">
             <div class="section-heading">
               <div>
-                <p class="eyebrow">S3 background jobs</p>
+                <p class="eyebrow">Famille upload</p>
                 <h2>Upload des images vers S3</h2>
+                <p class="muted small">Le preview dry-run évalue les produits candidats sans écrire sur S3 ni en SQLite.</p>
               </div>
             </div>
             <div class="s3-grid">
@@ -107,53 +112,69 @@
               </div>
             </div>
             <div class="s3-actions">
-              <button id="startS3JobBtn" class="primary-btn" type="button">Lancer l’upload S3</button>
-              <button id="stopS3JobBtn" class="secondary-btn" type="button">Stop job actif</button>
+              <button id="previewUploadBtn" class="secondary-btn" type="button">Prévisualiser l’upload</button>
+              <button id="startUploadBtn" class="primary-btn" type="button">Lancer l’upload S3</button>
+              <button id="stopUploadJobsBtn" class="secondary-btn" type="button">Stop job upload actif</button>
               <span id="s3ConfigHint" class="muted small"></span>
             </div>
+            <p id="uploadHint" class="muted small"></p>
           </section>
 
           <section class="s3-panel">
             <div class="section-heading">
-              <h2>Jobs d’upload</h2>
+              <h2>Historique upload</h2>
             </div>
             <div id="uploadJobsList" class="s3-jobs-list"></div>
           </section>
         </section>
 
-        <section class="tab-panel" data-tab-panel="migration" hidden>
+        <section class="tab-panel" data-tab-panel="url_migration" hidden>
           <section class="s3-panel">
             <div class="section-heading">
               <div>
-                <p class="eyebrow">Migration des URLs existantes</p>
+                <p class="eyebrow">Famille migration</p>
                 <h2>Réécrire les anciens s3:// en URLs publiques AWS_URL</h2>
-                <p class="muted small">Le script existant est lancé en background via l’API admin. Un preview montre un échantillon sans écrire. Le run complet crée un backup JSON avant modification.</p>
+                <p class="muted small">Le preview crée un vrai job dry-run; le run complet crée un backup JSON avant modification.</p>
               </div>
             </div>
-            <div class="s3-actions" style="margin-bottom: 12px;">
+            <div class="s3-actions">
               <button id="previewMigrationBtn" class="secondary-btn" type="button">Prévisualiser la migration</button>
               <button id="startMigrationBtn" class="primary-btn" type="button">Lancer la migration</button>
+              <button id="stopMigrationJobsBtn" class="secondary-btn" type="button">Stop job migration actif</button>
               <span id="migrationHint" class="muted small"></span>
             </div>
-            <div class="section-heading" style="margin-top: 14px;">
+          </section>
+
+          <section class="s3-panel">
+            <div class="section-heading">
+              <h2>Historique migration</h2>
+            </div>
+            <div id="migrationJobsList" class="s3-jobs-list"></div>
+          </section>
+        </section>
+
+        <section class="tab-panel" data-tab-panel="state_cleanup" hidden>
+          <section class="s3-panel">
+            <div class="section-heading">
               <div>
-                <p class="eyebrow">Cleanup de l’état S3</p>
-                <h2>Nettoyer les produits marqués saved_on_s3 devenus obsolètes</h2>
-                <p class="muted small">À lancer après un changement de bucket, de credentials ou de contenu distant. Le preview montre les enregistrements ciblés; le run complet crée un backup JSON puis remet leur état S3 à zéro.</p>
+                <p class="eyebrow">Famille cleanup</p>
+                <h2>Nettoyer les états S3 devenus obsolètes</h2>
+                <p class="muted small">À utiliser après changement de bucket, credentials ou contenu distant. Le preview n’écrit rien.</p>
               </div>
             </div>
             <div class="s3-actions">
               <button id="previewCleanupBtn" class="secondary-btn" type="button">Prévisualiser le cleanup</button>
               <button id="startCleanupBtn" class="primary-btn" type="button">Lancer le cleanup</button>
+              <button id="stopCleanupJobsBtn" class="secondary-btn" type="button">Stop job cleanup actif</button>
               <span id="cleanupHint" class="muted small"></span>
             </div>
           </section>
 
           <section class="s3-panel">
             <div class="section-heading">
-              <h2>Jobs de migration</h2>
+              <h2>Historique cleanup</h2>
             </div>
-            <div id="migrationJobsList" class="s3-jobs-list"></div>
+            <div id="cleanupJobsList" class="s3-jobs-list"></div>
           </section>
         </section>
       </section>
@@ -165,7 +186,10 @@
               <div>
                 <p class="eyebrow">Détails du job</p>
                 <h2 id="s3JobModalTitle">Job</h2>
-                <span id="s3JobModalStatus" class="job-pill">queued</span>
+                <div class="s3-actions-inline">
+                  <span id="s3JobModalStatus" class="job-pill">queued</span>
+                  <span id="s3JobModalDryRun" class="job-pill job-dry-run hidden">dry-run</span>
+                </div>
               </div>
               <div class="s3-actions-inline">
                 <button id="s3JobModalCancelBtn" class="secondary-btn" type="button">Annuler ce job</button>
@@ -198,7 +222,7 @@
       </div>
     </div>
 
-    <script src="./shared-ui.js?v=20260529-2"></script>
-    <script src="./s3.js?v=20260529-2"></script>
+    <script src="./shared-ui.js?v=20260529-3"></script>
+    <script src="./s3.js?v=20260529-3"></script>
   </body>
 </html>

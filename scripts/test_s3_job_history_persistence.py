@@ -89,6 +89,8 @@ def main() -> int:
             assert persisted_job['status'] == 'completed', persisted_job
             assert persisted_job['processed'] == 1, persisted_job
             assert persisted_job['uploaded'] == 1, persisted_job
+            assert persisted_job['job_family'] == 'upload', persisted_job
+            assert persisted_job['dry_run'] is False, persisted_job
             assert len(persisted_job['items']) == 1, persisted_job
             assert downloads == URLS, downloads
 
@@ -97,6 +99,75 @@ def main() -> int:
             assert reloaded_job is not None, reloaded.list_jobs()
             assert reloaded_job['status'] == 'completed', reloaded_job
             assert reloaded_job['uploaded'] == 1, reloaded_job
+            assert reloaded_job['job_family'] == 'upload', reloaded_job
+            assert reloaded_job['dry_run'] is False, reloaded_job
+
+            legacy_payload = {
+                'jobs': [
+                    {
+                        'job_id': 'legacy-migration-preview',
+                        'dataset_id': 'all',
+                        'source': 'migration',
+                        'limit': 5,
+                        'status': 'completed',
+                        'processed': 2,
+                        'uploaded': 2,
+                        'skipped': 0,
+                        'failed': 0,
+                        'total': 2,
+                        'started_at': 100.0,
+                        'ended_at': 101.0,
+                        'concurrency': 1,
+                        'items': [{'status': 'preview'}],
+                        'kind': 'migration_preview',
+                    },
+                    {
+                        'job_id': 'legacy-cleanup',
+                        'dataset_id': 'all',
+                        'source': 'cleanup',
+                        'limit': 5,
+                        'status': 'completed',
+                        'processed': 1,
+                        'uploaded': 1,
+                        'skipped': 0,
+                        'failed': 0,
+                        'total': 1,
+                        'started_at': 102.0,
+                        'ended_at': 103.0,
+                        'concurrency': 1,
+                        'items': [{'status': 'uploaded'}],
+                        'kind': 'cleanup',
+                    },
+                    {
+                        'job_id': 'legacy-upload',
+                        'dataset_id': 'shein',
+                        'source': 'products',
+                        'limit': 5,
+                        'status': 'completed',
+                        'processed': 1,
+                        'uploaded': 1,
+                        'skipped': 0,
+                        'failed': 0,
+                        'total': 1,
+                        'started_at': 104.0,
+                        'ended_at': 105.0,
+                        'concurrency': 1,
+                        'items': [{'status': 'uploaded'}],
+                        'kind': 'upload',
+                    },
+                ]
+            }
+            store_path.write_text(json.dumps(legacy_payload), encoding='utf-8')
+            legacy_manager = S3JobManager(store_path=store_path, history_limit=50)
+            migration_preview = legacy_manager.get_job('legacy-migration-preview')
+            cleanup_job = legacy_manager.get_job('legacy-cleanup')
+            upload_job = legacy_manager.get_job('legacy-upload')
+            assert migration_preview['job_family'] == 'url_migration', migration_preview
+            assert migration_preview['dry_run'] is True, migration_preview
+            assert cleanup_job['job_family'] == 'state_cleanup', cleanup_job
+            assert cleanup_job['dry_run'] is False, cleanup_job
+            assert upload_job['job_family'] == 'upload', upload_job
+            assert upload_job['dry_run'] is False, upload_job
 
             interrupted_payload = {
                 'jobs': [

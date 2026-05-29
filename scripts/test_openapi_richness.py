@@ -30,18 +30,34 @@ def main() -> int:
         time.sleep(1.0)
         with urllib.request.urlopen(f'{BASE}/openapi.json', timeout=10) as resp:
             spec = json.loads(resp.read().decode('utf-8'))
+        schemas = spec.get('components', {}).get('schemas', {})
         out = {
             'version': spec.get('info', {}).get('version'),
             'has_schemas': 'schemas' in spec.get('components', {}),
             'has_parameters': 'parameters' in spec.get('components', {}),
             'has_datasets_path': '/api/datasets' in spec.get('paths', {}),
+            'has_upload_jobs_path': '/api/s3/upload-jobs' in spec.get('paths', {}),
+            'has_url_migration_jobs_path': '/api/s3/url-migration-jobs' in spec.get('paths', {}),
+            'has_state_cleanup_jobs_path': '/api/s3/state-cleanup-jobs' in spec.get('paths', {}),
             'datasets_has_responses': 'responses' in spec['paths']['/api/datasets']['get'],
             'products_has_parameters': len(spec['paths']['/api/products']['get'].get('parameters', [])),
             'health_has_response_schema': 'content' in spec['paths']['/healthz']['get']['responses']['200'],
-            'schema_count': len(spec.get('components', {}).get('schemas', {})),
+            'has_job_family_schema': 'job_family' in schemas.get('S3JobState', {}).get('properties', {}),
+            'has_dry_run_schema': 'dry_run' in schemas.get('S3JobState', {}).get('properties', {}),
+            'schema_count': len(schemas),
         }
         print(json.dumps(out, ensure_ascii=False))
-        return 0 if out['has_schemas'] and out['has_parameters'] and out['has_datasets_path'] and out['schema_count'] >= 10 else 1
+        return 0 if all([
+            out['has_schemas'],
+            out['has_parameters'],
+            out['has_datasets_path'],
+            out['has_upload_jobs_path'],
+            out['has_url_migration_jobs_path'],
+            out['has_state_cleanup_jobs_path'],
+            out['has_job_family_schema'],
+            out['has_dry_run_schema'],
+            out['schema_count'] >= 10,
+        ]) else 1
     finally:
         server.terminate()
         try:

@@ -150,13 +150,15 @@ def main() -> int:
                     prefix=kwargs['prefix'],
                     total=len(kwargs['rows']),
                     status='queued',
+                    job_family='upload',
+                    dry_run=bool(kwargs.get('dry_run')),
                 )
             return None
 
         manager.start_job = fake_start_job  # type: ignore[assignment]
         try:
             create_handler = make_handler({'dataset_id': 'shein', 'limit': 1, 'concurrency': 1, 'bucket': 'ignored-bucket', 'prefix': 'ignored-prefix'})
-            server.Handler.handle_s3_jobs_create(create_handler)
+            server.Handler.handle_s3_family_job_create(create_handler, 'upload')
             create_payload = read_json(create_handler)
             job = create_payload['data']
             assert captured['bucket'] == 'env-bucket', captured

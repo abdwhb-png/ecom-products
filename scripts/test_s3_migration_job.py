@@ -101,11 +101,12 @@ def main() -> int:
             job_id=job_id,
             dataset_id='all',
             source='migration',
-            kind='migration',
             total=1,
             runner=runner,
             concurrency=1,
             limit=1,
+            dry_run=False,
+            job_family='url_migration',
         )
         future.result(timeout=10)
         job = server.S3_JOB_MANAGER.get_job(job_id)
@@ -114,6 +115,8 @@ def main() -> int:
         assert job['processed'] == 1, job
         assert job['uploaded'] == 1, job
         assert job['kind'] == 'migration', job
+        assert job['job_family'] == 'url_migration', job
+        assert job['dry_run'] is False, job
 
         conn3 = server.db_connect()
         try:

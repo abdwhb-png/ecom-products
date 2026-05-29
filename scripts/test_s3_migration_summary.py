@@ -69,7 +69,7 @@ def main() -> int:
         handler = FakeHandler.__new__(FakeHandler)
         handler.headers = FakeHeaders({})
         handler.wfile = type('W', (), {'write': lambda self, b: setattr(handler, '_body', b)})()
-        server.Handler.handle_s3_migration_summary(handler)
+        server.Handler.handle_s3_family_summary(handler, 'url_migration')
         payload = json.loads(handler._body.decode('utf-8'))
         data = payload['data']
         assert data['total'] == 1, data

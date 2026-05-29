@@ -60,6 +60,80 @@ def seed_db(db_path: Path):
         conn.close()
 
 
+def run_preview_job(tmpdir: str) -> dict:
+    job_id = 'cleanup-preview-test'
+
+    def runner(record_item, cancel_event):
+        conn = server.db_connect()
+        try:
+            changes = server.s3_cleanup_collect(conn, bucket=os.environ['AWS_BUCKET'])
+            for change in changes:
+                if cancel_event.is_set():
+                    raise RuntimeError('cancelled')
+                record_item({
+                    'status': 'preview',
+                    'message': 'Preview stale S3-state cleanup item',
+                    'timestamp': 1.0,
+                    'goods_id': change['goods_id'],
+                    'reason': change['reason'],
+                })
+        finally:
+            conn.close()
+
+    future = server.S3_JOB_MANAGER.start_custom_job(
+        job_id=job_id,
+        dataset_id='all',
+        source='cleanup',
+        total=1,
+        runner=runner,
+        concurrency=1,
+        limit=1,
+        dry_run=True,
+        job_family='state_cleanup',
+    )
+    future.result(timeout=10)
+    return server.S3_JOB_MANAGER.get_job(job_id)
+
+
+def run_write_job(tmpdir: str) -> dict:
+    job_id = 'cleanup-write-test'
+
+    def runner(record_item, cancel_event):
+        conn = server.db_connect()
+        try:
+            local_changes = server.s3_cleanup_collect(conn, bucket=os.environ['AWS_BUCKET'])
+            backup_path = Path(tmpdir) / 'cleanup-backup.json'
+            server.s3_cleanup_write_backup(conn, backup_path)
+            for change in local_changes:
+                if cancel_event.is_set():
+                    raise RuntimeError('Cleanup cancelled')
+                server.s3_cleanup_apply(conn, [change], updated_at=2.0)
+                record_item({
+                    'status': 'uploaded',
+                    'message': 'Cleared stale saved_on_s3 state',
+                    'timestamp': 2.0,
+                    'goods_id': change['goods_id'],
+                    'reason': change['reason'],
+                    'backup_path': str(backup_path),
+                })
+        finally:
+            conn.close()
+
+    future = server.S3_JOB_MANAGER.start_custom_job(
+        job_id=job_id,
+        dataset_id='all',
+        source='cleanup',
+        total=1,
+        runner=runner,
+        concurrency=1,
+        limit=1,
+        dry_run=False,
+        job_family='state_cleanup',
+    )
+    future.result(timeout=10)
+    return server.S3_JOB_MANAGER.get_job(job_id)
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / 'catalog.db'
@@ -67,31 +141,26 @@ def main() -> int:
         override_server_db_path(db_path)
         seed_db(db_path)
 
+        preview_job = run_preview_job(tmpdir)
+        assert preview_job is not None
+        assert preview_job['job_family'] == 'state_cleanup', preview_job
+        assert preview_job['dry_run'] is True, preview_job
+        assert preview_job['uploaded'] == 1, preview_job
+        assert preview_job['items'][0]['status'] == 'preview', preview_job
+
         conn = server.db_connect()
         try:
-            changes = server.s3_cleanup_collect(conn, bucket=os.environ['AWS_BUCKET'])
-            assert len(changes) == 1, changes
-            assert changes[0]['goods_id'] == 'shein:cleanup-1', changes
+            row = conn.execute("SELECT saved_on_s3 FROM s3_objects WHERE goods_id = ?", ('shein:cleanup-1',)).fetchone()
+            assert row['saved_on_s3'] == 1, row
         finally:
             conn.close()
 
-        conn2 = server.db_connect()
-        try:
-            local_changes = server.s3_cleanup_collect(conn2, bucket=os.environ['AWS_BUCKET'])
-            assert len(local_changes) == 1, local_changes
-            backup_path = Path(tmpdir) / 'cleanup-backup.json'
-            server.s3_cleanup_write_backup(conn2, backup_path)
-            seen = []
-
-            def on_progress(change):
-                seen.append(change['goods_id'])
-
-            updated = server.s3_cleanup_apply(conn2, local_changes, updated_at=2.0, progress_cb=on_progress)
-            assert updated == 1, updated
-            assert seen == ['shein:cleanup-1'], seen
-            assert backup_path.exists(), backup_path
-        finally:
-            conn2.close()
+        write_job = run_write_job(tmpdir)
+        assert write_job is not None
+        assert write_job['job_family'] == 'state_cleanup', write_job
+        assert write_job['dry_run'] is False, write_job
+        assert write_job['uploaded'] == 1, write_job
+        assert write_job['items'][0]['backup_path'].endswith('cleanup-backup.json'), write_job
 
         conn3 = server.db_connect()
         try:
@@ -107,7 +176,7 @@ def main() -> int:
         finally:
             conn3.close()
 
-    print('OK: stale S3 cleanup clears persisted saved_on_s3 state and produces a backup')
+    print('OK: stale S3 cleanup dry-run and write mode both expose canonical family metadata')
     return 0
 
 

@@ -18,6 +18,7 @@ playwright-report/
 # Generated screenshots / temp
 dashboard-*.png
 .firecrawl/
+.openclaw/
 
 # Local dataset downloads
 /data/
@@ -35,4 +36,5 @@ s3_jobs_state.json
 
 # Ignore generated migration backups
 s3_objects_backup_*.json
+s3_objects_cleanup_backup_*.json
 s3_state.json.bak.*
