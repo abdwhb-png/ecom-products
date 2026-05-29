@@ -380,6 +380,7 @@ async function fetchCategories() {
   const params = new URLSearchParams({
     dataset: state.currentDataset,
     search: state.search,
+    savedOnS3: String(state.savedOnS3),
     page: String(state.categoryPage),
     pageSize: String(state.categoryPageSize),
   });

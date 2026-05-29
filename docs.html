@@ -232,7 +232,7 @@
             <tr><th>Datasets</th><td><code class="inline">/api/datasets</code></td></tr>
             <tr><th>Catégories</th><td><code class="inline">/api/categories</code></td></tr>
             <tr><th>Produits</th><td><code class="inline">/api/products</code></td></tr>
-            <tr><th>Version spec</th><td><code class="inline">1.2.0</code></td></tr>
+            <tr><th>Version spec</th><td><code class="inline">1.3.0</code></td></tr>
           </table>
         </section>
       </div>
@@ -283,12 +283,12 @@
 
           <article class="card" style="background: var(--panel-2);">
             <div class="endpoint"><span class="method get">GET</span><span class="path">/api/categories</span></div>
-            <p class="muted small">Liste paginée des catégories stables d’un dataset.</p>
+            <p class="muted small">Liste paginée des catégories stables d’un dataset. Supporte désormais <code class="inline">savedOnS3=true</code> pour ne garder que les catégories ayant au moins un produit sync sur S3, avec <code class="inline">image_url</code> qui préfère une image S3 représentative.</p>
           </article>
 
           <article class="card" style="background: var(--panel-2);">
             <div class="endpoint"><span class="method get">GET</span><span class="path">/api/categories/{slug}</span></div>
-            <p class="muted small">Détail d’une catégorie par slug stable.</p>
+            <p class="muted small">Détail d’une catégorie par slug stable. Supporte aussi <code class="inline">savedOnS3=true</code> avec la même logique de filtrage et de préférence d’image S3.</p>
           </article>
 
           <article class="card" style="background: var(--panel-2);">

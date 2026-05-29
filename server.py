@@ -167,7 +167,7 @@ OPENAPI_SPEC = {
     'openapi': '3.1.0',
     'info': {
         'title': 'Fast Fashion Dashboard API',
-        'version': '1.1.0',
+        'version': '1.3.0',
         'description': 'Read-only API for categories/products plus background S3 jobs.',
     },
     'servers': [{'url': '/'}],
@@ -259,7 +259,7 @@ OPENAPI_SPEC = {
             'savedOnS3': {
                 'name': 'savedOnS3',
                 'in': 'query',
-                'description': 'When true, returns only products whose runtime S3 state is marked as saved in SQLite.',
+                'description': 'When true, product endpoints return only rows whose runtime S3 state is marked as saved in SQLite; category endpoints return only categories with at least one saved product and prefer a representative S3 image URL when available.',
                 'schema': {'type': 'boolean', 'default': False},
             },
             'format': {
@@ -349,13 +349,18 @@ OPENAPI_SPEC = {
             },
             'CategoryResource': {
                 'type': 'object',
-                'required': ['name', 'slug', 'top_category_name', 'source_url', 'image_url'],
+                'required': ['name', 'slug', 'top_category_name', 'source_url', 'image_url', 'source_image_url', 's3_image_url', 'saved_on_s3', 'saved_products_count', 's3_image_count'],
                 'properties': {
                     'name': {'type': 'string'},
                     'slug': {'type': 'string'},
                     'top_category_name': {'type': ['string', 'null']},
                     'source_url': {'type': ['string', 'null']},
                     'image_url': {'type': ['string', 'null']},
+                    'source_image_url': {'type': ['string', 'null']},
+                    's3_image_url': {'type': ['string', 'null']},
+                    'saved_on_s3': {'type': 'boolean'},
+                    'saved_products_count': {'type': 'integer'},
+                    's3_image_count': {'type': 'integer'},
                     'count': {'type': 'integer'},
                 },
             },
@@ -815,11 +820,12 @@ OPENAPI_SPEC = {
                 'tags': ['categories'],
                 'operationId': 'listCategories',
                 'summary': 'List categories',
-                'description': 'Returns stable category resources for a dataset.',
+                'description': 'Returns stable category resources for a dataset. When savedOnS3=true, only categories with at least one S3-saved product are returned and image_url prefers a representative S3 image.',
                 'security': [{'bearerAuth': []}],
                 'parameters': [
                     {'$ref': '#/components/parameters/dataset'},
                     {'$ref': '#/components/parameters/search'},
+                    {'$ref': '#/components/parameters/savedOnS3'},
                     {'$ref': '#/components/parameters/page'},
                     {'$ref': '#/components/parameters/pageSize'},
                 ],
@@ -839,11 +845,12 @@ OPENAPI_SPEC = {
                 'tags': ['categories'],
                 'operationId': 'getCategory',
                 'summary': 'Get category',
-                'description': 'Returns a single category resource by slug.',
+                'description': 'Returns a single category resource by slug. When savedOnS3=true, the lookup is restricted to categories with at least one S3-saved product and image_url prefers a representative S3 image.',
                 'security': [{'bearerAuth': []}],
                 'parameters': [
                     {'$ref': '#/components/parameters/categorySlug'},
                     {'$ref': '#/components/parameters/dataset'},
+                    {'$ref': '#/components/parameters/savedOnS3'},
                 ],
                 'responses': {
                     '200': {
@@ -2027,14 +2034,19 @@ class Handler(SimpleHTTPRequestHandler):
             raise ValueError(f'Dataset not found: {dataset_id}')
         return row
 
-    def _category_rows(self, conn, dataset_id, search: str | None = None):
+    def _category_rows(self, conn, dataset_id, search: str | None = None, saved_on_s3_only: bool = False):
         sql = '''
             SELECT
                 p.category AS name,
                 COUNT(*) AS count,
-                MAX(CASE WHEN p.image <> '' THEN p.image ELSE NULL END) AS image_url,
-                MAX(CASE WHEN p.url <> '' THEN p.url ELSE NULL END) AS source_url
+                MAX(CASE WHEN p.image <> '' THEN p.image ELSE NULL END) AS source_image_url,
+                MAX(CASE WHEN p.url <> '' THEN p.url ELSE NULL END) AS source_url,
+                MAX(CASE WHEN o.saved_on_s3 = 1 AND COALESCE(o.s3_url, '') <> '' THEN o.s3_url ELSE NULL END) AS s3_image_url,
+                MAX(CASE WHEN o.saved_on_s3 = 1 THEN 1 ELSE 0 END) AS saved_on_s3,
+                COUNT(DISTINCT CASE WHEN o.saved_on_s3 = 1 THEN p.id ELSE NULL END) AS saved_products_count,
+                COALESCE(SUM(CASE WHEN o.saved_on_s3 = 1 THEN COALESCE(o.s3_image_count, 0) ELSE 0 END), 0) AS s3_image_count
             FROM products p
+            LEFT JOIN s3_objects o ON o.dataset_id = p.dataset_id AND o.product_id = p.id
             WHERE p.dataset_id = ? AND COALESCE(p.category, '') <> ''
         '''
         params = [dataset_id]
@@ -2044,20 +2056,27 @@ class Handler(SimpleHTTPRequestHandler):
             sql += " AND (unaccent(p.category) LIKE ? OR unaccent(p.category_path) LIKE ?)"
             ns = _normalize_search_text(search)
             params.extend([f'%{ns}%', f'%{ns}%'])
-        sql += '''
-            GROUP BY p.category
-            ORDER BY count DESC, p.category COLLATE NOCASE ASC
-            '''
+        sql += '\n            GROUP BY p.category\n        '
+        if saved_on_s3_only:
+            sql += '\n            HAVING COUNT(DISTINCT CASE WHEN o.saved_on_s3 = 1 THEN p.id ELSE NULL END) > 0\n            '
+        sql += '\n            ORDER BY count DESC, p.category COLLATE NOCASE ASC\n            '
         return conn.execute(sql, params).fetchall()
 
     def _category_resource(self, row):
         name = (row['name'] or '').strip()
+        source_image_url = row['source_image_url'] or None
+        s3_image_url = row['s3_image_url'] or None
         return {
             'name': name,
             'slug': make_slug(name),
             'top_category_name': infer_top_category(name),
             'source_url': row['source_url'] or None,
-            'image_url': row['image_url'] or None,
+            'image_url': s3_image_url or source_image_url,
+            'source_image_url': source_image_url,
+            's3_image_url': s3_image_url,
+            'saved_on_s3': bool(row['saved_on_s3']),
+            'saved_products_count': int(row['saved_products_count'] or 0),
+            's3_image_count': int(row['s3_image_count'] or 0),
         }
 
     def _s3_object_for(self, conn, dataset_id, product_id):
@@ -2266,9 +2285,10 @@ class Handler(SimpleHTTPRequestHandler):
         page = parse_positive_int(params.get('page', ['1'])[0], 1)
         page_size = parse_positive_int(params.get('pageSize', ['100'])[0], 100, maximum=MAX_PAGE_SIZE)
         search = (params.get('search', [''])[0] or '').strip()
+        saved_on_s3_only = parse_bool(params.get('savedOnS3', ['false'])[0])
         conn = db_connect()
         dataset_row = self._dataset_row(conn, dataset_id)
-        rows = self._category_rows(conn, dataset_id, search)
+        rows = self._category_rows(conn, dataset_id, search, saved_on_s3_only=saved_on_s3_only)
         conn.close()
         total = len(rows)
         total_pages = max(1, math.ceil(total / page_size))
@@ -2284,9 +2304,10 @@ class Handler(SimpleHTTPRequestHandler):
         dataset_id = (params.get('dataset', ['shein'])[0] or 'shein').strip().lower()
         if dataset_id not in ALLOWED_DATASETS:
             raise ValueError(f'Unknown dataset: {dataset_id}')
+        saved_on_s3_only = parse_bool(params.get('savedOnS3', ['false'])[0])
         conn = db_connect()
         dataset_row = self._dataset_row(conn, dataset_id)
-        rows = self._category_rows(conn, dataset_id)
+        rows = self._category_rows(conn, dataset_id, saved_on_s3_only=saved_on_s3_only)
         conn.close()
         target = None
         for row in rows:

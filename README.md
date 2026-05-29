@@ -112,17 +112,30 @@ Returns dataset metadata.
 ### `GET /api/categories`
 Returns stable category resources.
 This endpoint is the dedicated source for category filters in the frontend.
+When `savedOnS3=true`, only categories with at least one product marked `saved_on_s3` are returned, and `image_url` prefers a representative S3 image URL when available.
 
 Query params:
 - `dataset`
+- `search`
+- `savedOnS3` — only categories with at least one product whose runtime S3 state is marked as saved in SQLite
 - `page`
 - `pageSize`
 
+Category resources now expose:
+- `image_url` — preferred image URL for the category, using S3 when available
+- `source_image_url` — representative source dataset image URL
+- `s3_image_url` — representative S3 image URL when available
+- `saved_on_s3` — whether the category has at least one saved product on S3
+- `saved_products_count` — number of products in the category marked saved on S3
+- `s3_image_count` — summed mirrored image count across saved products in the category
+
 ### `GET /api/categories/{slug}`
 Returns a single category resource.
+When `savedOnS3=true`, the lookup is restricted to categories with at least one product marked `saved_on_s3`, and `image_url` prefers a representative S3 image URL when available.
 
 Query params:
 - `dataset`
+- `savedOnS3`
 
 ### `GET /api/products`
 Returns products only.
@@ -135,6 +148,9 @@ Query params:
 - `sort`
 - `imagesOnly` — only products that have at least one source image in the imported catalog
 - `savedOnS3` — only products whose runtime S3 state is marked as saved in SQLite
+
+Dashboard notes:
+- the category API follows the same S3 toggle as products: when the dashboard enables `savedOnS3`, category requests also pass `savedOnS3=true`, so the category list only shows categories with at least one saved product and category `image_url` prefers a representative S3 image
 
 S3 / AWS notes:
 - `AWS_ENDPOINT_URL` = endpoint API S3-compatible used by the uploader backend (for example R2 S3 API endpoint)
