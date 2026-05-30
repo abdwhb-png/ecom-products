@@ -48,7 +48,7 @@ DEFAULT_KIND_BY_FAMILY = {
     STATE_CLEANUP_JOB_FAMILY: 'cleanup',
 }
 
-UPLOAD_SELECTION_MODES = ('pending', 'all', 'partial')
+UPLOAD_SELECTION_MODES = ('pending', 'pending_only', 'all', 'partial')
 
 PREVIEW_KIND_BY_FAMILY = {
     UPLOAD_JOB_FAMILY: 'upload',
@@ -229,7 +229,7 @@ def collect_upload_candidates(payload: dict[str, Any], context: dict[str, Any]) 
             filter_params = [source_filter, like_value, like_value, like_value]
 
         excluded_complete_count = 0
-        if selection_mode in {'pending', 'partial'}:
+        if selection_mode in {'pending', 'pending_only', 'partial'}:
             excluded_complete_count = int(conn.execute(
                 f'''
                 SELECT COUNT(*)
@@ -246,6 +246,8 @@ def collect_upload_candidates(payload: dict[str, Any], context: dict[str, Any]) 
         params: list[Any] = [dataset_id]
         if selection_mode == 'pending':
             where.append('(o.product_id IS NULL OR COALESCE(o.saved_on_s3, 0) = 0)')
+        elif selection_mode == 'pending_only':
+            where.append('o.product_id IS NULL')
         elif selection_mode == 'partial':
             where.append('o.product_id IS NOT NULL')
             where.append('COALESCE(o.saved_on_s3, 0) = 0')

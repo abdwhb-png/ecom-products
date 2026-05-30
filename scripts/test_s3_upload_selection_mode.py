@@ -166,6 +166,16 @@ def main() -> int:
             assert pending_payload['data']['selection_mode'] == 'pending', pending_payload
             assert pending_payload['data']['excluded_complete_count'] == 1, pending_payload
 
+            pending_only_handler = make_handler({'dataset_id': 'shein', 'limit': 10, 'concurrency': 1, 'source_filter': 'selection-mode', 'selection_mode': 'pending_only'})
+            server.Handler.handle_s3_family_job_create(pending_only_handler, 'upload')
+            pending_only_payload = read_json(pending_only_handler)
+            pending_only_call = captured_calls[-1]
+            assert pending_only_call['selection_mode'] == 'pending_only', pending_only_call
+            assert [row['id'] for row in pending_only_call['rows']] == ['prod-3'], pending_only_call['rows']
+            assert pending_only_call['excluded_complete_count'] == 1, pending_only_call
+            assert pending_only_payload['data']['selection_mode'] == 'pending_only', pending_only_payload
+            assert pending_only_payload['data']['excluded_complete_count'] == 1, pending_only_payload
+
             all_handler = make_handler({'dataset_id': 'shein', 'limit': 10, 'concurrency': 1, 'source_filter': 'selection-mode', 'selection_mode': 'all'})
             server.Handler.handle_s3_family_job_create(all_handler, 'upload')
             all_payload = read_json(all_handler)
@@ -193,7 +203,7 @@ def main() -> int:
                 os.environ['FAST_FASHION_DB_PATH'] = previous_db_env
             server.DB_PATH = previous_db_path
 
-    print('OK: upload jobs default to pending candidates and selection_mode controls pending/all/partial candidate selection')
+    print('OK: upload jobs support pending, pending_only, partial, and all candidate selection modes')
     return 0
 
 

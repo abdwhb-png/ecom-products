@@ -177,7 +177,7 @@ Dashboard notes:
 - the S3 job detail modal paginates processed items 50 per page and uses a fixed top-right close icon
 - ASOS S3 jobs now use a proxy-aware concurrency cap server-side: max `2` without proxy, and when the application egress proxy is configured the cap defaults to `8` but can be overridden with `FAST_FASHION_ASOS_PROXY_MAX_CONCURRENCY` (still capped globally at `24`)
 - upload jobs accept an optional `source_filter` so `/s3` can target a specific product/resource deterministically for preview or live validation (exact product id or a case-insensitive fragment from the name / URL / source image URL)
-- upload jobs also accept `selection_mode`: `pending` (default, only unsynced + partial products), `partial` (repair only partially synced products), or `all` (rescan everything, including already saved products)
+- upload jobs also accept `selection_mode`: `pending` (default, unsynced + partial products), `pending_only` (unsynced products only), `partial` (repair only partially synced products), or `all` (rescan everything, including already saved products)
 - upload job state now exposes `excluded_complete_count` so the UI can show how many already-complete products were skipped before the worker started
 - when `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are configured, every finished S3 job sends a simple Telegram notification summarizing job id, family, dataset, final status, progress, and any excluded-complete count
 - ASOS source-image downloads now use the exact timeout plan `10/20/30` seconds with controlled retry backoff `1/3` seconds for retry-eligible `403`/timeout/network failures

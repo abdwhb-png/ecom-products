@@ -47,9 +47,9 @@ def main() -> int:
         return 0 if (
             out['create_has_selection_mode']
             and out['create_selection_default'] == 'pending'
-            and out['create_selection_enum'] == ['pending', 'all', 'partial']
+            and out['create_selection_enum'] == ['pending', 'pending_only', 'all', 'partial']
             and out['state_has_selection_mode']
-            and out['state_selection_enum'] == ['pending', 'all', 'partial']
+            and out['state_selection_enum'] == ['pending', 'pending_only', 'all', 'partial']
             and out['state_has_excluded_complete_count']
             and 'selection_mode' in out['upload_post_description']
         ) else 1
