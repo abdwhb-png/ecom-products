@@ -599,8 +599,20 @@ class S3JobManager:
         chat_id = os.getenv('TELEGRAM_CHAT_ID', '').strip()
         if not token or not chat_id:
             return
-        family = str(job.get('job_family') or job.get('kind') or 'job').replace('_', ' ')
-        status = str(job.get('status') or 'completed')
+        raw_family = str(job.get('job_family') or job.get('kind') or 'job').strip().lower()
+        family_title = {
+            'upload': 'Upload',
+            'url_migration': 'Migration URL',
+            'state_cleanup': 'Cleanup',
+            'migration': 'Migration URL',
+            'cleanup': 'Cleanup',
+        }.get(raw_family, 'Job S3')
+        status = str(job.get('status') or 'completed').strip().lower() or 'completed'
+        status_label = {
+            'completed': 'Terminé',
+            'failed': 'Échec',
+            'cancelled': 'Annulé',
+        }.get(status, status)
         dataset_id = str(job.get('dataset_id') or 'all')
         job_id = str(job.get('job_id') or '')
         total = int(job.get('total') or 0)
@@ -613,16 +625,15 @@ class S3JobManager:
         error = str(job.get('error') or job.get('last_message') or '').strip()
         prefix = '🔎' if dry_run else ('✅' if status == 'completed' else '⚠️' if status == 'cancelled' else '❌')
         message_lines = [
-            f"{prefix} *S3 job terminé*",
-            f"- ID: `{job_id}`",
-            f"- Type: *{family}*",
+            f"{prefix} *{family_title} terminé*",
+            f"- Job: `{job_id}`",
             f"- Dataset: *{dataset_id}*",
-            f"- Statut: *{status}*{' (dry-run)' if dry_run else ''}",
+            f"- Statut: *{status_label}*{' · dry-run' if dry_run else ''}",
             f"- Progression: *{processed}/{total}*",
-            f"- Réussis: *{uploaded}* · Ignorés: *{skipped}* · Erreurs: *{failed}*",
+            f"- Résultat: *{uploaded}* réussis · *{skipped}* ignorés · *{failed}* erreurs",
         ]
         if excluded_complete_count > 0:
-            message_lines.append(f"- Déjà complets exclus: *{excluded_complete_count}*")
+            message_lines.append(f"- Produits déjà complets exclus: *{excluded_complete_count}*")
         if error and status in {'failed', 'cancelled'}:
             message_lines.append(f"- Détail: `{error[:500]}`")
         payload = {

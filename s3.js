@@ -93,6 +93,14 @@ const els = {
   authGate: document.getElementById('authGate'),
   authStateLabel: document.getElementById('authStateLabel'),
   s3AuthForm: document.getElementById('s3AuthForm'),
+  apiTokenInput: document.getElementById('apiTokenInput'),
+  apiTokenToggleBtn: document.getElementById('apiTokenToggleBtn'),
+  unlockApiBtn: document.getElementById('unlockApiBtn'),
+  useStoredTokenBtn: document.getElementById('useStoredTokenBtn'),
+  resetStoredTokenBtn: document.getElementById('resetStoredTokenBtn'),
+  storedApiTokenLabel: document.getElementById('storedApiTokenState'),
+  apiTokenHint: document.getElementById('apiTokenHint'),
+  s3AdminPasswordGroup: document.getElementById('s3AdminPasswordGroup'),
   passwordInput: document.getElementById('passwordInput'),
   passwordToggleBtn: document.getElementById('passwordToggleBtn'),
   unlockBtn: document.getElementById('unlockBtn'),
@@ -209,6 +217,26 @@ function formatDuration(startedAt, endedAt) {
   return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
 }
 
+function maskToken(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '—';
+  if (raw.length <= 10) return `${raw.slice(0, 2)}***${raw.slice(-2)}`;
+  return `${raw.slice(0, 4)}***${raw.slice(-4)}`;
+}
+
+function refreshStoredTokenUi() {
+  if (!els.storedApiTokenLabel) return;
+  if (state.apiToken) {
+    els.storedApiTokenLabel.textContent = `Token stocké détecté (${maskToken(state.apiToken)})`;
+    els.useStoredTokenBtn?.removeAttribute('disabled');
+    els.resetStoredTokenBtn?.removeAttribute('disabled');
+    return;
+  }
+  els.storedApiTokenLabel.textContent = 'Aucun token API stocké localement.';
+  els.useStoredTokenBtn?.setAttribute('disabled', 'disabled');
+  els.resetStoredTokenBtn?.setAttribute('disabled', 'disabled');
+}
+
 function getFamilyConfig(family) {
   return JOB_FAMILY_CONFIG[family] || JOB_FAMILY_CONFIG.upload;
 }
@@ -223,6 +251,7 @@ function getActiveJobsForFamily(family) {
 
 async function init() {
   renderGlobalNav('s3');
+  initPasswordFieldToggle({ input: els.apiTokenInput, button: els.apiTokenToggleBtn, hiddenLabel: 'Afficher', shownLabel: 'Masquer' });
   initPasswordFieldToggle({ input: els.passwordInput, button: els.passwordToggleBtn, hiddenLabel: 'Afficher', shownLabel: 'Masquer' });
   initTabs({
     buttons: [els.uploadTabBtn, els.migrationTabBtn, els.cleanupTabBtn],
@@ -247,6 +276,25 @@ function bindEvents() {
   els.s3AuthForm?.addEventListener('submit', async (event) => {
     event.preventDefault();
     await unlockPage();
+  });
+  els.unlockApiBtn?.addEventListener('click', async () => {
+    await unlockApiTokenForS3();
+  });
+  els.useStoredTokenBtn?.addEventListener('click', () => {
+    if (els.apiTokenInput) {
+      els.apiTokenInput.value = state.apiToken;
+    }
+    els.apiTokenHint.textContent = state.apiToken ? 'Le token stocké a été recopié dans le champ.' : 'Aucun token stocké disponible.';
+  });
+  els.resetStoredTokenBtn?.addEventListener('click', () => {
+    state.apiToken = '';
+    window.localStorage.removeItem(API_TOKEN_STORAGE_KEY);
+    els.apiTokenInput.value = '';
+    els.apiTokenHint.textContent = 'Token API local supprimé. Saisis-en un nouveau pour continuer.';
+    els.authStateLabel.textContent = 'API verrouillée';
+    els.authHint.textContent = 'Le mot de passe admin S3 sera demandé après validation du token API.';
+    els.s3AdminPasswordGroup?.classList.add('hidden');
+    refreshStoredTokenUi();
   });
   els.previewUploadBtn?.addEventListener('click', () => submitFamilyJobAction('upload', true));
   els.startUploadBtn?.addEventListener('click', () => submitFamilyJobAction('upload', false));
@@ -285,6 +333,10 @@ function bindEvents() {
 
 function hydrateApiToken() {
   state.apiToken = (window.localStorage.getItem(API_TOKEN_STORAGE_KEY) || '').trim();
+  if (els.apiTokenInput) {
+    els.apiTokenInput.value = state.apiToken;
+  }
+  refreshStoredTokenUi();
 }
 
 function getApiHeaders(extraHeaders = {}) {
@@ -337,14 +389,59 @@ function closeJobModal() {
 }
 
 async function hydrateAuthState() {
+  if (!state.apiToken) {
+    els.authStateLabel.textContent = 'API verrouillée';
+    els.apiTokenHint.textContent = 'Entre d’abord le token API Bearer.';
+    els.authHint.textContent = 'Le mot de passe admin S3 sera demandé après validation du token API.';
+    els.s3AdminPasswordGroup?.classList.add('hidden');
+    return;
+  }
   const response = await fetch('/api/s3/auth-check', { credentials: 'include', headers: getApiHeaders() });
   const payload = await response.json().catch(() => ({}));
+  if (response.status === 401 && payload?.error?.code === 'unauthorized') {
+    els.authStateLabel.textContent = 'API verrouillée';
+    els.apiTokenHint.textContent = 'Token API invalide ou expiré.';
+    els.authHint.textContent = 'Corrige le token API pour pouvoir déverrouiller S3.';
+    els.s3AdminPasswordGroup?.classList.add('hidden');
+    return;
+  }
+  els.authStateLabel.textContent = 'API OK · S3 verrouillé';
+  els.apiTokenHint.textContent = 'Token API valide. Tu peux maintenant entrer le mot de passe admin S3.';
+  els.s3AdminPasswordGroup?.classList.remove('hidden');
   if (payload?.data?.authenticated) {
     state.unlocked = true;
     els.authGate.classList.add('hidden');
     els.s3Workspace.classList.remove('hidden');
     els.authStateLabel.textContent = 'Déverrouillé';
     els.authHint.textContent = '';
+  }
+}
+
+async function unlockApiTokenForS3() {
+  const candidate = (els.apiTokenInput?.value || '').trim();
+  state.apiToken = candidate;
+  if (candidate) {
+    window.localStorage.setItem(API_TOKEN_STORAGE_KEY, candidate);
+  } else {
+    window.localStorage.removeItem(API_TOKEN_STORAGE_KEY);
+  }
+  refreshStoredTokenUi();
+  setS3Busy(true, { button: els.unlockApiBtn, loadingText: 'Vérification…' });
+  try {
+    const response = await fetch('/api/datasets', { headers: getApiHeaders() });
+    if (!response.ok) {
+      els.authStateLabel.textContent = 'API verrouillée';
+      els.apiTokenHint.textContent = 'Token API invalide ou manquant.';
+      els.authHint.textContent = 'Le mot de passe admin S3 restera bloqué tant que le token API n’est pas valide.';
+      els.s3AdminPasswordGroup?.classList.add('hidden');
+      return;
+    }
+    els.authStateLabel.textContent = 'API OK · S3 verrouillé';
+    els.apiTokenHint.textContent = 'Token API valide. Tu peux maintenant entrer le mot de passe admin S3.';
+    els.authHint.textContent = 'Deuxième étape : déverrouille maintenant la zone S3 avec son mot de passe admin.';
+    els.s3AdminPasswordGroup?.classList.remove('hidden');
+  } finally {
+    setS3Busy(false, { button: els.unlockApiBtn });
   }
 }
 
@@ -359,14 +456,24 @@ async function unlockPage() {
       body: JSON.stringify({ password }),
     });
     const payload = await response.json().catch(() => ({}));
-    if (response.status === 401 && payload?.error?.code === 'unauthorized' && !password) {
+    if (response.status === 401 && payload?.error?.code === 'unauthorized' && !state.apiToken) {
       els.authStateLabel.textContent = 'API verrouillée';
-      els.authHint.textContent = 'Le token API Bearer est requis avant le mot de passe admin S3.';
+      els.apiTokenHint.textContent = 'Entre d’abord un token API valide.';
+      els.authHint.textContent = 'Le mot de passe admin S3 ne peut être vérifié qu’après validation du token API.';
+      els.s3AdminPasswordGroup?.classList.add('hidden');
+      return;
+    }
+    if (response.status === 401 && payload?.error?.code === 'unauthorized') {
+      els.authStateLabel.textContent = 'API verrouillée';
+      els.apiTokenHint.textContent = 'Token API invalide ou expiré.';
+      els.authHint.textContent = 'Corrige le token API puis réessaie le mot de passe admin S3.';
+      els.s3AdminPasswordGroup?.classList.add('hidden');
       return;
     }
     if (!response.ok) {
-      els.authStateLabel.textContent = 'Verrouillé';
+      els.authStateLabel.textContent = 'API OK · S3 verrouillé';
       els.authHint.textContent = payload?.error?.message || 'Mot de passe admin S3 invalide';
+      els.s3AdminPasswordGroup?.classList.remove('hidden');
       return;
     }
     state.unlocked = true;

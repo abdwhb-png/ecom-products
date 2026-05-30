@@ -36,9 +36,24 @@
 
       <section id="authGate" class="auth-gate">
         <h2>Accès protégé</h2>
-        <p>Entre le mot de passe admin S3 pour déverrouiller cette page.</p>
+        <p>Cette zone se déverrouille en 2 étapes : d’abord le token API, puis le mot de passe admin S3.</p>
         <form id="s3AuthForm" class="auth-form">
-          <label class="field-group" for="passwordInput">
+          <label class="field-group" for="apiTokenInput">
+            <span>Token API Bearer</span>
+            <div class="secret-field">
+              <input id="apiTokenInput" name="api_token" type="password" placeholder="FAST_FASHION_API_TOKEN" autocomplete="off" />
+              <button id="apiTokenToggleBtn" class="secondary-btn secret-toggle" type="button" aria-pressed="false">Afficher</button>
+            </div>
+          </label>
+          <div class="s3-actions-inline">
+            <button id="unlockApiBtn" class="secondary-btn" type="button">Vérifier le token API</button>
+            <button id="useStoredTokenBtn" class="secondary-btn" type="button">Utiliser le token stocké</button>
+            <button id="resetStoredTokenBtn" class="secondary-btn" type="button">Réinitialiser le token</button>
+          </div>
+          <p id="storedApiTokenState" class="muted small"></p>
+          <p id="apiTokenHint" class="muted small"></p>
+
+          <label id="s3AdminPasswordGroup" class="field-group hidden" for="passwordInput">
             <span>Mot de passe admin S3</span>
             <div class="secret-field">
               <input id="passwordInput" name="s3_admin_password" type="password" placeholder="Mot de passe" autocomplete="current-password" />
@@ -46,7 +61,7 @@
             </div>
           </label>
           <div class="s3-actions-inline">
-            <button id="unlockBtn" class="primary-btn" type="submit">Déverrouiller</button>
+            <button id="unlockBtn" class="primary-btn" type="submit">Déverrouiller S3</button>
           </div>
         </form>
         <p id="authHint" class="muted small"></p>

@@ -182,6 +182,8 @@ Dashboard notes:
 - when `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are configured, every finished S3 job sends a simple Telegram notification summarizing job id, family, dataset, final status, progress, and any excluded-complete count
 - ASOS source-image downloads now use the exact timeout plan `10/20/30` seconds with controlled retry backoff `1/3` seconds for retry-eligible `403`/timeout/network failures
 - protected S3 config/job responses now expose only safe proxy-derived state such as `proxy_enabled`, `egress_proxy_mode`, `asos_max_concurrency`, and compact per-host `download_stats`; raw proxy secrets are never exposed
+- the `/s3` UI now follows the same two-step auth order as the backend: validate the API Bearer token first, then unlock the S3 admin cookie with the S3 password
+- the locked `/s3` screen now shows whether a token is already stored locally and offers explicit “use stored token” / “reset token” controls to reduce auth confusion
 - S3 status/config GET endpoints now accept the deployment bearer token as well as the short-lived S3 UI cookie, matching the documented API auth model for remote API checks
 - the runtime SQLite database now creates a composite index on `s3_objects(dataset_id, saved_on_s3, product_id)` to keep `savedOnS3=true` product queries responsive on large datasets such as ASOS
 - `page`
