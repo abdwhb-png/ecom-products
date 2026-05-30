@@ -27,6 +27,7 @@ const JOB_FAMILY_CONFIG = {
       limit: Number.parseInt(els.s3LimitInput.value, 10) || 50,
       source_filter: (els.s3SourceFilterInput?.value || '').trim() || undefined,
       concurrency: Number.parseInt(els.s3ConcurrencyInput.value, 10) || 4,
+      selection_mode: (els.s3SelectionModeSelect?.value || 'pending').trim() || 'pending',
     }),
     getHintEl: () => els.uploadHint,
     getListEl: () => els.uploadJobsList,
@@ -109,6 +110,7 @@ const els = {
   s3LimitInput: document.getElementById('s3LimitInput'),
   s3SourceFilterInput: document.getElementById('s3SourceFilterInput'),
   s3ConcurrencyInput: document.getElementById('s3ConcurrencyInput'),
+  s3SelectionModeSelect: document.getElementById('s3SelectionModeSelect'),
   previewUploadBtn: document.getElementById('previewUploadBtn'),
   startUploadBtn: document.getElementById('startUploadBtn'),
   stopUploadJobsBtn: document.getElementById('stopUploadJobsBtn'),
@@ -251,6 +253,7 @@ function bindEvents() {
   els.s3DatasetSelect?.addEventListener('change', updateGlobalStateFromFamilies);
   els.s3SourceFilterInput?.addEventListener('change', updateGlobalStateFromFamilies);
   els.s3ConcurrencyInput?.addEventListener('change', updateGlobalStateFromFamilies);
+  els.s3SelectionModeSelect?.addEventListener('change', updateGlobalStateFromFamilies);
   els.stopUploadJobsBtn?.addEventListener('click', () => stopActiveFamilyJobs('upload'));
   els.previewMigrationBtn?.addEventListener('click', () => submitFamilyJobAction('url_migration', true));
   els.startMigrationBtn?.addEventListener('click', () => submitFamilyJobAction('url_migration', false));
@@ -305,6 +308,7 @@ function setS3Busy(isBusy, { button = null, loadingText = 'Chargement…' } = {}
     els.s3LimitInput,
     els.s3SourceFilterInput,
     els.s3ConcurrencyInput,
+    els.s3SelectionModeSelect,
     els.refreshS3JobsBtn,
     els.uploadTabBtn,
     els.migrationTabBtn,
@@ -527,10 +531,12 @@ function updateFamilyHint(family, jobs) {
     return;
   }
   const mode = latest.dry_run ? 'dry-run' : 'write';
+  const excludedCompleteCount = Number(latest.excluded_complete_count || 0);
+  const excludedLabel = excludedCompleteCount > 0 ? ` · ${excludedCompleteCount} déjà complets exclus` : '';
   const processingLabel = ACTIVE_JOB_STATUSES.includes(latest.status)
     ? ' · mise à jour temps réel…'
     : '';
-  hintEl.textContent = `Dernier ${config.title.toLowerCase()}: ${latest.status} · ${latest.processed || 0}/${latest.total || 0} · ${mode}${processingLabel}`;
+  hintEl.textContent = `Dernier ${config.title.toLowerCase()}: ${latest.status} · ${latest.processed || 0}/${latest.total || 0} · ${mode}${excludedLabel}${processingLabel}`;
 }
 
 async function openJobDetails(jobId, page = 1, options = {}) {
@@ -575,6 +581,7 @@ function renderJobDetailsLoading(jobId, page, job = null) {
     <div class="s3-job-kpi"><span>Traités</span><strong>${job ? `${job.processed || 0}/${job.total || 0}` : '…'}</strong></div>
     <div class="s3-job-kpi"><span>${escapeHtml(family.progressSuccessLabel)}</span><strong>${job ? (job.uploaded || 0) : '…'}</strong></div>
     <div class="s3-job-kpi"><span>Ignorés / Erreurs</span><strong>${job ? `${job.skipped || 0} / ${job.failed || 0}` : '…'}</strong></div>
+    <div class="s3-job-kpi"><span>Déjà complets exclus</span><strong>${job ? (job.excluded_complete_count || 0) : '…'}</strong></div>
   `;
   els.jobModalConfig.innerHTML = `
     <div><span>Famille</span><strong>${escapeHtml(job ? family.detailTypeLabel : '—')}</strong></div>
@@ -582,6 +589,7 @@ function renderJobDetailsLoading(jobId, page, job = null) {
     <div><span>Bucket</span><strong>${escapeHtml(job?.bucket || '—')}</strong></div>
     <div><span>Prefix</span><strong>${escapeHtml(job?.prefix || '—')}</strong></div>
     <div><span>Source filter</span><strong>${escapeHtml(job?.source_filter || '—')}</strong></div>
+    <div><span>Sélection</span><strong>${escapeHtml(job?.selection_mode || 'pending')}</strong></div>
     <div><span>Démarré</span><strong>${escapeHtml(formatTime(job?.started_at))}</strong></div>
     <div><span>Terminé</span><strong>${escapeHtml(formatTime(job?.ended_at))}</strong></div>
     <div><span>Durée</span><strong>${escapeHtml(formatDuration(job?.started_at, job?.ended_at))}</strong></div>
@@ -659,6 +667,7 @@ function renderJobDetailsModal(detail) {
     <div class="s3-job-kpi"><span>Traités</span><strong>${job.processed || 0}/${job.total || 0}</strong></div>
     <div class="s3-job-kpi"><span>${escapeHtml(family.progressSuccessLabel)}</span><strong>${job.uploaded || 0}</strong></div>
     <div class="s3-job-kpi"><span>Ignorés / Erreurs</span><strong>${(job.skipped || 0)} / ${(job.failed || 0)}</strong></div>
+    <div class="s3-job-kpi"><span>Déjà complets exclus</span><strong>${job.excluded_complete_count || 0}</strong></div>
   `;
   els.jobModalConfig.innerHTML = `
     <div><span>Famille</span><strong>${escapeHtml(family.detailTypeLabel)}</strong></div>
@@ -666,6 +675,7 @@ function renderJobDetailsModal(detail) {
     <div><span>Bucket</span><strong>${escapeHtml(job.bucket || '—')}</strong></div>
     <div><span>Prefix</span><strong>${escapeHtml(job.prefix || '—')}</strong></div>
     <div><span>Source filter</span><strong>${escapeHtml(job.source_filter || '—')}</strong></div>
+    <div><span>Sélection</span><strong>${escapeHtml(job.selection_mode || 'pending')}</strong></div>
     <div><span>Démarré</span><strong>${escapeHtml(formatTime(job.started_at))}</strong></div>
     <div><span>Terminé</span><strong>${escapeHtml(formatTime(job.ended_at))}</strong></div>
     <div><span>Durée</span><strong>${escapeHtml(formatDuration(job.started_at, job.ended_at))}</strong></div>

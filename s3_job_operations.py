@@ -48,6 +48,8 @@ DEFAULT_KIND_BY_FAMILY = {
     STATE_CLEANUP_JOB_FAMILY: 'cleanup',
 }
 
+UPLOAD_SELECTION_MODES = ('pending', 'all', 'partial')
+
 PREVIEW_KIND_BY_FAMILY = {
     UPLOAD_JOB_FAMILY: 'upload',
     URL_MIGRATION_JOB_FAMILY: 'migration_preview',
@@ -206,31 +208,73 @@ def collect_upload_candidates(payload: dict[str, Any], context: dict[str, Any]) 
         raise ValueError('Missing AWS_BUCKET')
 
     source_filter = str(payload.get('source_filter') or '').strip()
+    selection_mode = str(payload.get('selection_mode') or 'pending').strip().lower() or 'pending'
+    if selection_mode not in UPLOAD_SELECTION_MODES:
+        raise ValueError(f'Invalid selection_mode: {selection_mode}')
 
     conn = context['db_connect']()
     try:
+        filter_clause = ''
+        filter_params: list[Any] = []
         if source_filter:
             like_value = f'%{source_filter}%'
-            rows = conn.execute(
-                '''
-                SELECT * FROM products
-                WHERE dataset_id = ?
-                  AND (
-                    CAST(id AS TEXT) = ?
-                    OR LOWER(COALESCE(name, '')) LIKE LOWER(?)
-                    OR LOWER(COALESCE(url, '')) LIKE LOWER(?)
-                    OR LOWER(COALESCE(image, '')) LIKE LOWER(?)
-                  )
-                ORDER BY id ASC
-                LIMIT ?
+            filter_clause = '''
+                AND (
+                    CAST(p.id AS TEXT) = ?
+                    OR LOWER(COALESCE(p.name, '')) LIKE LOWER(?)
+                    OR LOWER(COALESCE(p.url, '')) LIKE LOWER(?)
+                    OR LOWER(COALESCE(p.image, '')) LIKE LOWER(?)
+                )
+            '''
+            filter_params = [source_filter, like_value, like_value, like_value]
+
+        excluded_complete_count = 0
+        if selection_mode in {'pending', 'partial'}:
+            excluded_complete_count = int(conn.execute(
+                f'''
+                SELECT COUNT(*)
+                FROM products p
+                JOIN s3_objects o ON o.dataset_id = p.dataset_id AND o.product_id = p.id
+                WHERE p.dataset_id = ?
+                  AND COALESCE(o.saved_on_s3, 0) = 1
+                  {filter_clause}
                 ''',
-                (dataset_id, source_filter, like_value, like_value, like_value, limit),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                'SELECT * FROM products WHERE dataset_id = ? ORDER BY id ASC LIMIT ?',
-                (dataset_id, limit),
-            ).fetchall()
+                (dataset_id, *filter_params),
+            ).fetchone()[0] or 0)
+
+        where = ['p.dataset_id = ?']
+        params: list[Any] = [dataset_id]
+        if selection_mode == 'pending':
+            where.append('(o.product_id IS NULL OR COALESCE(o.saved_on_s3, 0) = 0)')
+        elif selection_mode == 'partial':
+            where.append('o.product_id IS NOT NULL')
+            where.append('COALESCE(o.saved_on_s3, 0) = 0')
+
+        if source_filter:
+            like_value = f'%{source_filter}%'
+            where.append(
+                '''
+                (
+                    CAST(p.id AS TEXT) = ?
+                    OR LOWER(COALESCE(p.name, '')) LIKE LOWER(?)
+                    OR LOWER(COALESCE(p.url, '')) LIKE LOWER(?)
+                    OR LOWER(COALESCE(p.image, '')) LIKE LOWER(?)
+                )
+                '''
+            )
+            params.extend([source_filter, like_value, like_value, like_value])
+
+        rows = conn.execute(
+            f'''
+            SELECT p.*
+            FROM products p
+            LEFT JOIN s3_objects o ON o.dataset_id = p.dataset_id AND o.product_id = p.id
+            WHERE {' AND '.join(where)}
+            ORDER BY p.id ASC
+            LIMIT ?
+            ''',
+            (*params, limit),
+        ).fetchall()
         selected = [dict(row) for row in rows]
     finally:
         conn.close()
@@ -244,6 +288,8 @@ def collect_upload_candidates(payload: dict[str, Any], context: dict[str, Any]) 
         'limit': effective_limit,
         'concurrency': concurrency,
         'source_filter': source_filter or None,
+        'selection_mode': selection_mode,
+        'excluded_complete_count': excluded_complete_count,
         'bucket': bucket,
         'prefix': prefix,
         'config': config,
@@ -279,6 +325,8 @@ def build_upload_runner(job_id: str, dry_run: bool, collected: dict[str, Any], c
             'limit': collected['limit'],
             'concurrency': collected['concurrency'],
             'source_filter': collected.get('source_filter'),
+            'selection_mode': collected.get('selection_mode') or 'pending',
+            'excluded_complete_count': int(collected.get('excluded_complete_count') or 0),
             'rows': collected['rows'],
             's3_client_factory': _make_upload_s3_client_factory(collected['config'], resolve_region_fn=resolve_region_fn),
             'resolve_source_url': resolve_source_url,

@@ -48,6 +48,8 @@ class S3JobState:
     prefix: str | None = None
     concurrency: int = 4
     source_filter: str | None = None
+    selection_mode: str = 'pending'
+    excluded_complete_count: int = 0
     last_message: str | None = None
     items: list[dict[str, Any]] | None = None
     job_family: str = UPLOAD_JOB_FAMILY
@@ -133,6 +135,8 @@ class S3JobManager:
         limit: int = 100,
         concurrency: int = 4,
         source_filter: str | None = None,
+        selection_mode: str = 'pending',
+        excluded_complete_count: int = 0,
         rows: list[dict[str, Any]],
         s3_client_factory=None,
         resolve_source_url=None,
@@ -150,6 +154,8 @@ class S3JobManager:
                 limit=max(1, int(limit)),
                 concurrency=max(1, int(concurrency)),
                 source_filter=source_filter,
+                selection_mode=str(selection_mode or 'pending').strip() or 'pending',
+                excluded_complete_count=max(0, int(excluded_complete_count or 0)),
                 total=min(len(rows), max(1, int(limit))),
                 job_family=job_family,
                 dry_run=dry_run,
@@ -177,7 +183,9 @@ class S3JobManager:
         prefix: str | None = '',
         concurrency: int = 1,
         source_filter: str | None = None,
+        selection_mode: str = 'pending',
         limit: int | None = None,
+        excluded_complete_count: int = 0,
         dry_run: bool = False,
         job_family: str = UPLOAD_JOB_FAMILY,
         kind: str | None = None,
@@ -192,6 +200,8 @@ class S3JobManager:
                 limit=max(1, int(limit or total or 1)),
                 concurrency=max(1, int(concurrency or 1)),
                 source_filter=source_filter,
+                selection_mode=str(selection_mode or 'pending').strip() or 'pending',
+                excluded_complete_count=max(0, int(excluded_complete_count or 0)),
                 total=max(0, int(total or 0)),
                 job_family=job_family,
                 dry_run=dry_run,
@@ -226,6 +236,8 @@ class S3JobManager:
         limit: int,
         concurrency: int,
         source_filter: str | None,
+        selection_mode: str,
+        excluded_complete_count: int,
         total: int,
         job_family: str,
         dry_run: bool,
@@ -244,6 +256,8 @@ class S3JobManager:
             limit=max(1, int(limit)),
             concurrency=max(1, int(concurrency)),
             source_filter=source_filter,
+            selection_mode=str(selection_mode or 'pending').strip() or 'pending',
+            excluded_complete_count=max(0, int(excluded_complete_count or 0)),
             total=max(0, int(total or 0)),
             status='running',
             started_at=time.time(),
