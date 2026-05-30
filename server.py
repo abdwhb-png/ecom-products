@@ -128,7 +128,7 @@ def effective_s3_config() -> dict:
         },
         'proxy_enabled': proxy_enabled,
         'egress_proxy_mode': proxy_state.get('egress_proxy_mode', 'direct'),
-        'asos_max_concurrency': 4 if proxy_enabled else 2,
+        'asos_max_concurrency': 8 if proxy_enabled else 2,
         'asos_timeout_plan_seconds': [10, 20, 30],
         'asos_retry_backoff_seconds': [1, 3],
     }

@@ -173,7 +173,7 @@ Dashboard notes:
 - the category stat on the homepage reflects the total number of available categories from `/api/categories` pagination metadata, not just the current category-options page
 - the category select itself is paginated server-side in the frontend to stay responsive on very large datasets such as ASOS
 - the S3 job detail modal paginates processed items 50 per page and uses a fixed top-right close icon
-- ASOS S3 jobs now use a proxy-aware concurrency cap server-side: max `2` without proxy, max `4` when the application egress proxy is configured
+- ASOS S3 jobs now use a proxy-aware concurrency cap server-side: max `2` without proxy, max `8` when the application egress proxy is configured
 - upload jobs accept an optional `source_filter` so `/s3` can target a specific product/resource deterministically for preview or live validation (exact product id or a case-insensitive fragment from the name / URL / source image URL)
 - ASOS source-image downloads now use the exact timeout plan `10/20/30` seconds with controlled retry backoff `1/3` seconds for retry-eligible `403`/timeout/network failures
 - protected S3 config/job responses now expose only safe proxy-derived state such as `proxy_enabled`, `egress_proxy_mode`, `asos_max_concurrency`, and compact per-host `download_stats`; raw proxy secrets are never exposed

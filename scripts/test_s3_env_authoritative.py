@@ -145,7 +145,7 @@ def main() -> int:
             proxy_payload = read_json(get_handler_proxy)
             assert proxy_payload['data']['proxy_enabled'] is True, proxy_payload
             assert proxy_payload['data']['egress_proxy_mode'] == 'proxy', proxy_payload
-            assert proxy_payload['data']['asos_max_concurrency'] == 4, proxy_payload
+            assert proxy_payload['data']['asos_max_concurrency'] == 8, proxy_payload
 
             manager = server.S3_JOB_MANAGER
             manager._jobs.clear()
@@ -193,7 +193,7 @@ def main() -> int:
 
                 create_handler_asos = make_handler({'dataset_id': 'asos', 'limit': 1, 'concurrency': 24})
                 server.Handler.handle_s3_family_job_create(create_handler_asos, 'upload')
-                assert captured['concurrency'] == 4, captured
+                assert captured['concurrency'] == 8, captured
 
                 # Run synchronously with env config and no stale DB override.
                 future = original_start_job(
@@ -227,7 +227,7 @@ def main() -> int:
             else:
                 os.environ[key] = value
 
-    print('OK: S3 config is env-authoritative and upload jobs use env-derived bucket/prefix and proxy-aware caps')
+    print('OK: S3 config is env-authoritative and upload jobs use env-derived bucket/prefix and the prudent proxy-aware ASOS cap')
     return 0
 
 

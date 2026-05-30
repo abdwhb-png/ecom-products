@@ -193,7 +193,7 @@ def collect_upload_candidates(payload: dict[str, Any], context: dict[str, Any]) 
     limit = parse_positive_int(payload.get('limit', 100), 100)
     concurrency = parse_positive_int(payload.get('concurrency', 4), 4, maximum=24)
     if dataset_id == 'asos':
-        concurrency = min(concurrency, 4 if network_proxy.proxy_enabled() else 2)
+        concurrency = min(concurrency, 8 if network_proxy.proxy_enabled() else 2)
 
     allowed_datasets = set(context['allowed_datasets'])
     if dataset_id not in allowed_datasets:

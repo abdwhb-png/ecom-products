@@ -96,7 +96,7 @@ def main() -> int:
         context = make_context()
         context['db_connect'] = lambda: FakeConn()
         collected = collect_upload_candidates({'dataset_id': 'asos', 'limit': 1, 'concurrency': 9}, context)
-        assert collected['concurrency'] == 4, collected
+        assert collected['concurrency'] == 8, collected
 
         sleeps: list[float] = []
         s3_jobs.time.sleep = lambda seconds: sleeps.append(seconds)  # type: ignore[assignment]
