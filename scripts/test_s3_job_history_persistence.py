@@ -55,9 +55,9 @@ def main() -> int:
             payloads = {url: (f'bytes-for:{url}'.encode('utf-8'), 'image/jpeg') for url in URLS}
             downloads: list[str] = []
 
-            def fake_download(url: str):
+            def fake_download(url: str, dataset_id=None):
                 downloads.append(url)
-                return payloads[url]
+                return payloads[url], 'image/jpeg', {'hostname': 'example.test', 'proxy_used': False, 'proxy_mode': 'direct', 'attempt_count': 1, 'timeout_seconds': 20, 'error_type': None, 'http_status': None}
 
             manager._download = fake_download  # type: ignore[method-assign]
 
@@ -91,6 +91,7 @@ def main() -> int:
             assert persisted_job['uploaded'] == 1, persisted_job
             assert persisted_job['job_family'] == 'upload', persisted_job
             assert persisted_job['dry_run'] is False, persisted_job
+            assert 'download_stats' in persisted_job, persisted_job
             assert len(persisted_job['items']) == 1, persisted_job
             assert downloads == URLS, downloads
 

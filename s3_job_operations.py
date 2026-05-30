@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+import network_proxy
+
 from scripts.cleanup_stale_s3_objects import apply_cleanup as s3_cleanup_apply
 from scripts.cleanup_stale_s3_objects import collect_stale_rows as s3_cleanup_collect
 from scripts.cleanup_stale_s3_objects import write_backup as s3_cleanup_write_backup
@@ -107,13 +109,16 @@ def normalize_job_metadata(*, kind: Any = None, job_family: Any = None, dry_run:
 
 
 def build_job_id(job_family: str, dataset_id: str | None = None, now: float | None = None) -> str:
-    timestamp = int(now if now is not None else time.time())
+    moment = float(now if now is not None else time.time())
+    seconds = int(moment)
+    millis = int((moment - seconds) * 1000)
     family = str(job_family or '').strip() or UPLOAD_JOB_FAMILY
     prefix = str(dataset_id or '').strip().lower().replace(':', '-')
     family_slug = family.replace('_', '-')
+    suffix = f'{seconds}{millis:03d}'
     if prefix:
-        return f'{prefix}-{family_slug}-{timestamp}'
-    return f'{family_slug}-{timestamp}'
+        return f'{prefix}-{family_slug}-{suffix}'
+    return f'{family_slug}-{suffix}'
 
 
 @dataclass(frozen=True)
@@ -188,7 +193,7 @@ def collect_upload_candidates(payload: dict[str, Any], context: dict[str, Any]) 
     limit = parse_positive_int(payload.get('limit', 100), 100)
     concurrency = parse_positive_int(payload.get('concurrency', 4), 4, maximum=24)
     if dataset_id == 'asos':
-        concurrency = min(concurrency, 2)
+        concurrency = min(concurrency, 4 if network_proxy.proxy_enabled() else 2)
 
     allowed_datasets = set(context['allowed_datasets'])
     if dataset_id not in allowed_datasets:
@@ -200,23 +205,45 @@ def collect_upload_candidates(payload: dict[str, Any], context: dict[str, Any]) 
     if not bucket:
         raise ValueError('Missing AWS_BUCKET')
 
+    source_filter = str(payload.get('source_filter') or '').strip()
+
     conn = context['db_connect']()
     try:
-        rows = conn.execute(
-            'SELECT * FROM products WHERE dataset_id = ? ORDER BY id ASC LIMIT ?',
-            (dataset_id, limit),
-        ).fetchall()
+        if source_filter:
+            like_value = f'%{source_filter}%'
+            rows = conn.execute(
+                '''
+                SELECT * FROM products
+                WHERE dataset_id = ?
+                  AND (
+                    CAST(id AS TEXT) = ?
+                    OR LOWER(COALESCE(name, '')) LIKE LOWER(?)
+                    OR LOWER(COALESCE(url, '')) LIKE LOWER(?)
+                    OR LOWER(COALESCE(image, '')) LIKE LOWER(?)
+                  )
+                ORDER BY id ASC
+                LIMIT ?
+                ''',
+                (dataset_id, source_filter, like_value, like_value, like_value, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                'SELECT * FROM products WHERE dataset_id = ? ORDER BY id ASC LIMIT ?',
+                (dataset_id, limit),
+            ).fetchall()
         selected = [dict(row) for row in rows]
     finally:
         conn.close()
+
+    effective_limit = max(1, len(selected) or limit)
 
     return {
         'dataset_id': dataset_id,
         'source': source,
         'rows': selected,
-        'limit': limit,
+        'limit': effective_limit,
         'concurrency': concurrency,
-        'source_filter': payload.get('source_filter'),
+        'source_filter': source_filter or None,
         'bucket': bucket,
         'prefix': prefix,
         'config': config,

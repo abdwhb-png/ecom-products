@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 import unicodedata
 
 from dataset_service import load_dotenv
+import network_proxy
 from s3_job_operations import (
     JOB_DEFINITIONS,
     STATE_CLEANUP_JOB_FAMILY,
@@ -109,6 +110,8 @@ def resolve_s3_region(endpoint_url: str | None = None, explicit_region: str | No
 
 def effective_s3_config() -> dict:
     endpoint_url = resolve_aws_endpoint_url()
+    proxy_state = network_proxy.public_proxy_state()
+    proxy_enabled = bool(proxy_state.get('proxy_enabled'))
     return {
         'region_name': resolve_s3_region(endpoint_url, None),
         'bucket': resolve_aws_bucket() or None,
@@ -123,6 +126,11 @@ def effective_s3_config() -> dict:
             'endpoint_url': 'env',
             'public_url': 'env',
         },
+        'proxy_enabled': proxy_enabled,
+        'egress_proxy_mode': proxy_state.get('egress_proxy_mode', 'direct'),
+        'asos_max_concurrency': 4 if proxy_enabled else 2,
+        'asos_timeout_plan_seconds': [10, 20, 30],
+        'asos_retry_backoff_seconds': [1, 3],
     }
 
 
@@ -559,6 +567,11 @@ OPENAPI_SPEC = {
                         'readOnly': True,
                         'additionalProperties': {'type': 'string'},
                     },
+                    'proxy_enabled': {'type': 'boolean', 'readOnly': True},
+                    'egress_proxy_mode': {'type': 'string', 'enum': ['direct', 'proxy'], 'readOnly': True},
+                    'asos_max_concurrency': {'type': 'integer', 'readOnly': True},
+                    'asos_timeout_plan_seconds': {'type': 'array', 'items': {'type': 'integer'}, 'readOnly': True},
+                    'asos_retry_backoff_seconds': {'type': 'array', 'items': {'type': 'integer'}, 'readOnly': True},
                 },
             },
             'S3ConfigResponse': {
@@ -578,6 +591,7 @@ OPENAPI_SPEC = {
                     'product_id': {'type': ['string', 'null']},
                     'source_url': {'type': ['string', 'null']},
                     's3_url': {'type': ['string', 'null']},
+                    'download_stats': {'type': ['object', 'null'], 'additionalProperties': True},
                 },
             },
             'S3JobState': {
@@ -606,6 +620,7 @@ OPENAPI_SPEC = {
                     'job_family': {'type': 'string', 'enum': ['upload', 'url_migration', 'state_cleanup']},
                     'dry_run': {'type': 'boolean'},
                     'kind': {'type': 'string'},
+                    'download_stats': {'type': ['object', 'null'], 'additionalProperties': True},
                     'items': {'type': ['array', 'null'], 'items': {'$ref': '#/components/schemas/S3JobItem'}},
                 },
             },

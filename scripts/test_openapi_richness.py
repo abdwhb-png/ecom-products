@@ -44,6 +44,9 @@ def main() -> int:
             'health_has_response_schema': 'content' in spec['paths']['/healthz']['get']['responses']['200'],
             'has_job_family_schema': 'job_family' in schemas.get('S3JobState', {}).get('properties', {}),
             'has_dry_run_schema': 'dry_run' in schemas.get('S3JobState', {}).get('properties', {}),
+            'has_download_stats_schema': 'download_stats' in schemas.get('S3JobState', {}).get('properties', {}),
+            'has_proxy_enabled_schema': 'proxy_enabled' in schemas.get('S3Config', {}).get('properties', {}),
+            'has_proxy_mode_schema': 'egress_proxy_mode' in schemas.get('S3Config', {}).get('properties', {}),
             'schema_count': len(schemas),
         }
         print(json.dumps(out, ensure_ascii=False))
@@ -56,6 +59,9 @@ def main() -> int:
             out['has_state_cleanup_jobs_path'],
             out['has_job_family_schema'],
             out['has_dry_run_schema'],
+            out['has_download_stats_schema'],
+            out['has_proxy_enabled_schema'],
+            out['has_proxy_mode_schema'],
             out['schema_count'] >= 10,
         ]) else 1
     finally:

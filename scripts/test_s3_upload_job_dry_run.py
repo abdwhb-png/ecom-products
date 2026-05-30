@@ -68,6 +68,7 @@ def main() -> int:
         assert job is not None, manager.list_jobs()
         assert job['job_family'] == 'upload', job
         assert job['dry_run'] is True, job
+        assert 'download_stats' in job, job
         assert job['status'] == 'completed', job
         assert job['uploaded'] == 1, job
         assert job['failed'] == 0, job

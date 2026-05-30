@@ -107,10 +107,15 @@
                 <input id="s3LimitInput" type="number" min="1" max="10000" value="50" />
               </div>
               <div class="field-group">
+                <label for="s3SourceFilterInput">Filtre ciblé</label>
+                <input id="s3SourceFilterInput" type="text" placeholder="ID produit, nom ou fragment d’URL/image" />
+              </div>
+              <div class="field-group">
                 <label for="s3ConcurrencyInput">Multiprocessing</label>
                 <input id="s3ConcurrencyInput" type="number" min="1" max="24" value="4" />
               </div>
             </div>
+            <p class="muted small">Politique upload ASOS: max 2 en direct, max 4 avec proxy configuré. Timeouts ASOS: 10/20/30s avec backoff contrôlé 1/3s.</p>
             <div class="s3-actions">
               <button id="previewUploadBtn" class="secondary-btn" type="button">Prévisualiser l’upload</button>
               <button id="startUploadBtn" class="primary-btn" type="button">Lancer l’upload S3</button>

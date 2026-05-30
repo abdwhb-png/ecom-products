@@ -25,6 +25,7 @@ const JOB_FAMILY_CONFIG = {
     buildCreateBody: () => ({
       dataset_id: els.s3DatasetSelect.value,
       limit: Number.parseInt(els.s3LimitInput.value, 10) || 50,
+      source_filter: (els.s3SourceFilterInput?.value || '').trim() || undefined,
       concurrency: Number.parseInt(els.s3ConcurrencyInput.value, 10) || 4,
     }),
     getHintEl: () => els.uploadHint,
@@ -106,6 +107,7 @@ const els = {
   s3BucketInput: document.getElementById('s3BucketInput'),
   s3PrefixInput: document.getElementById('s3PrefixInput'),
   s3LimitInput: document.getElementById('s3LimitInput'),
+  s3SourceFilterInput: document.getElementById('s3SourceFilterInput'),
   s3ConcurrencyInput: document.getElementById('s3ConcurrencyInput'),
   previewUploadBtn: document.getElementById('previewUploadBtn'),
   startUploadBtn: document.getElementById('startUploadBtn'),
@@ -173,6 +175,11 @@ const state = {
     public_url: '',
     region_name: '',
     config_source: 'env',
+    proxy_enabled: false,
+    egress_proxy_mode: 'direct',
+    asos_max_concurrency: 2,
+    asos_timeout_plan_seconds: [10, 20, 30],
+    asos_retry_backoff_seconds: [1, 3],
   },
 };
 
@@ -241,6 +248,9 @@ function bindEvents() {
   });
   els.previewUploadBtn?.addEventListener('click', () => submitFamilyJobAction('upload', true));
   els.startUploadBtn?.addEventListener('click', () => submitFamilyJobAction('upload', false));
+  els.s3DatasetSelect?.addEventListener('change', updateGlobalStateFromFamilies);
+  els.s3SourceFilterInput?.addEventListener('change', updateGlobalStateFromFamilies);
+  els.s3ConcurrencyInput?.addEventListener('change', updateGlobalStateFromFamilies);
   els.stopUploadJobsBtn?.addEventListener('click', () => stopActiveFamilyJobs('upload'));
   els.previewMigrationBtn?.addEventListener('click', () => submitFamilyJobAction('url_migration', true));
   els.startMigrationBtn?.addEventListener('click', () => submitFamilyJobAction('url_migration', false));
@@ -293,6 +303,7 @@ function setS3Busy(isBusy, { button = null, loadingText = 'Chargement…' } = {}
     els.s3BucketInput,
     els.s3PrefixInput,
     els.s3LimitInput,
+    els.s3SourceFilterInput,
     els.s3ConcurrencyInput,
     els.refreshS3JobsBtn,
     els.uploadTabBtn,
@@ -407,6 +418,11 @@ async function refreshFamilyJobs(family, { quietAuth = false } = {}) {
     public_url: payload.config?.public_url || '',
     region_name: payload.config?.region_name || '',
     config_source: payload.config?.config_source || 'env',
+    proxy_enabled: Boolean(payload.config?.proxy_enabled),
+    egress_proxy_mode: payload.config?.egress_proxy_mode || 'direct',
+    asos_max_concurrency: Number(payload.config?.asos_max_concurrency || 2),
+    asos_timeout_plan_seconds: Array.isArray(payload.config?.asos_timeout_plan_seconds) ? payload.config.asos_timeout_plan_seconds : [10, 20, 30],
+    asos_retry_backoff_seconds: Array.isArray(payload.config?.asos_retry_backoff_seconds) ? payload.config.asos_retry_backoff_seconds : [1, 3],
   };
   renderFamilyJobList(family, state.familyJobs[family]);
   updateFamilyHint(family, state.familyJobs[family]);
@@ -428,11 +444,21 @@ function updateGlobalStateFromFamilies() {
     }
   });
   els.activeJobsCount.textContent = String(active.length);
+  const selectedDataset = els.s3DatasetSelect?.value || 'shein';
+  const asosCap = Number(state.serverConfig.asos_max_concurrency || 2);
+  const requestedValue = Number.parseInt(els.s3ConcurrencyInput?.value || '4', 10) || 4;
+  const effectiveMax = selectedDataset === 'asos' ? asosCap : 24;
+  if (els.s3ConcurrencyInput) {
+    els.s3ConcurrencyInput.max = String(effectiveMax);
+    if (requestedValue > effectiveMax) {
+      els.s3ConcurrencyInput.value = String(effectiveMax);
+    }
+  }
   els.s3BucketInput.value = state.serverConfig.bucket;
   els.s3PrefixInput.value = state.serverConfig.prefix;
   els.s3ConfigState.textContent = state.serverConfig.bucket || '—';
   els.s3ConfigHint.textContent = state.serverConfig.bucket
-    ? `Config env active · bucket=${state.serverConfig.bucket}${state.serverConfig.prefix ? ` · prefix=${state.serverConfig.prefix}` : ''}${state.serverConfig.region_name ? ` · region=${state.serverConfig.region_name}` : ''}`
+    ? `Config env active · bucket=${state.serverConfig.bucket}${state.serverConfig.prefix ? ` · prefix=${state.serverConfig.prefix}` : ''}${state.serverConfig.region_name ? ` · region=${state.serverConfig.region_name}` : ''} · egress=${state.serverConfig.egress_proxy_mode}${selectedDataset === 'asos' ? ` · ASOS max=${asosCap} · timeouts=${state.serverConfig.asos_timeout_plan_seconds.join('/') }s · backoff=${state.serverConfig.asos_retry_backoff_seconds.join('/') }s` : ''}`
     : 'AWS_BUCKET est manquant dans l’environnement du serveur.';
   syncCancelButtons();
 }
@@ -646,6 +672,7 @@ function renderJobDetailsModal(detail) {
     <div><span>Dernier message</span><strong>${escapeHtml(job.last_message || job.error || '—')}</strong></div>
   `;
   els.jobModalProgress.innerHTML = renderJobProgress(detail, { totalItems, processedCount, runningCount });
+  const downloadStatsHtml = renderDownloadStats(job.download_stats);
   els.jobModalStats.innerHTML = `
     <div class="s3-job-kpi"><span>Page</span><strong>${detail.page || 1}/${totalPages}</strong></div>
     <div class="s3-job-kpi"><span>Éléments sur page</span><strong>${items.length}</strong></div>
@@ -653,6 +680,7 @@ function renderJobDetailsModal(detail) {
     <div class="s3-job-kpi"><span>Déjà présents</span><strong>${reasons.exists}</strong></div>
     <div class="s3-job-kpi"><span>URL manquante</span><strong>${reasons.noSource}</strong></div>
     <div class="s3-job-kpi"><span>Timeout / 403</span><strong>${reasons.timeout + reasons.forbidden}</strong></div>
+    ${downloadStatsHtml}
   `;
   els.jobModalPageLabel.textContent = `Page ${detail.page || 1} / ${totalPages}`;
   els.jobModalPrev.disabled = (detail.page || 1) <= 1 || state.isSubmitting;
@@ -761,6 +789,19 @@ function renderJobProgress(detail, { totalItems, processedCount, runningCount })
   `;
 }
 
+function renderDownloadStats(downloadStats) {
+  if (!downloadStats || typeof downloadStats !== 'object' || !downloadStats.by_host) return '';
+  const entries = Object.entries(downloadStats.by_host);
+  if (!entries.length) return '';
+  return entries.map(([hostname, hostStats]) => {
+    const proxyModes = Object.entries(hostStats?.proxy_mode || {}).map(([mode, counters]) => {
+      const parts = Object.entries(counters || {}).map(([label, count]) => `${escapeHtml(label)}=${escapeHtml(count)}`).join(' · ');
+      return `<div class="s3-job-kpi"><span>${escapeHtml(hostname)} · ${escapeHtml(mode)}</span><strong>${parts || '—'}</strong></div>`;
+    }).join('');
+    return proxyModes;
+  }).join('');
+}
+
 function getItemTone(item) {
   const message = String(item?.message || '').toLowerCase();
   if (item?.status === 'failed' || message.includes('timeout') || message.includes('forbidden') || message.includes('no source url') || message.includes('all candidate urls failed') || message.includes('preview failed')) {
@@ -840,7 +881,16 @@ async function submitFamilyJobAction(family, dryRun) {
         sample: createdJob.items || [],
       };
     }
-    if (createdJob?.job_id) state.pendingJobIdByFamily[family] = createdJob.job_id;
+    const createdJobId = createdJob?.job_id || null;
+    if (createdJobId) {
+      state.pendingJobIdByFamily[family] = createdJobId;
+      state.selectedJobId = createdJobId;
+      state.selectedJobDetail = null;
+      state.detailPage = 1;
+      state.activeFamily = family;
+      openModalShell();
+      renderJobDetailsLoading(createdJobId, 1, createdJob);
+    }
     if (hintEl) {
       const total = createdJob?.total ?? (dryRun ? state.lastSummaryByFamily[family]?.total : summary?.total) ?? 0;
       hintEl.textContent = dryRun
@@ -849,9 +899,9 @@ async function submitFamilyJobAction(family, dryRun) {
     }
     await refreshFamilyJobs(family);
     updateGlobalStateFromFamilies();
-    if (createdJob?.job_id) {
+    if (createdJobId) {
       setS3Busy(false, { button });
-      await openJobDetails(createdJob.job_id, 1, { job: createdJob });
+      await openJobDetails(createdJobId, 1, { job: createdJob });
       return;
     }
   } finally {

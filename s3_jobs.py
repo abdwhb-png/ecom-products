@@ -9,9 +9,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, Callable
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+import network_proxy
 from s3_job_operations import UPLOAD_JOB_FAMILY, normalize_job_metadata
 
 try:
@@ -51,6 +53,7 @@ class S3JobState:
     job_family: str = UPLOAD_JOB_FAMILY
     dry_run: bool = False
     kind: str = 'upload'
+    download_stats: dict[str, Any] | None = None
 
 
 JOB_STATE_FIELDS = {field.name for field in fields(S3JobState)}
@@ -270,6 +273,7 @@ class S3JobManager:
             current.uploaded += 1
         else:
             current.failed += 1
+        self._merge_download_stats_unlocked(current, item)
         message = item.get('message')
         if message:
             current.last_message = str(message)
@@ -404,6 +408,7 @@ class S3JobManager:
             'failures': [],
             'status': 'skipped',
             'message': None,
+            'download_stats': None,
         }
         if job.cancel_requested:
             item['message'] = 'Cancelled before processing'
@@ -454,7 +459,7 @@ class S3JobManager:
                 })
                 continue
             try:
-                content, content_type = self._download(source_url)
+                content, content_type, download_meta = self._download(source_url, dataset_id=job.dataset_id)
                 if not content:
                     raise RuntimeError('Empty content')
                 if content_type and not str(content_type).lower().startswith('image/'):
@@ -479,12 +484,21 @@ class S3JobManager:
                     'key': key,
                     'status': 'uploaded',
                 })
+                item['download_stats'] = download_meta
             except Exception as exc:
                 last_error = exc
                 item['image_failed'] += 1
+                failure_meta = getattr(exc, 'download_meta', {}) if hasattr(exc, 'download_meta') else {}
+                item['download_stats'] = failure_meta or item.get('download_stats')
                 item['failures'].append({
                     'source_url': source_url,
                     'error': f'{type(exc).__name__}: {exc}',
+                    'hostname': failure_meta.get('hostname'),
+                    'attempt_count': failure_meta.get('attempt_count'),
+                    'proxy_used': failure_meta.get('proxy_used'),
+                    'timeout_seconds': failure_meta.get('timeout_seconds'),
+                    'error_type': failure_meta.get('error_type'),
+                    'http_status': failure_meta.get('http_status'),
                 })
 
         uploaded_or_existing = len(item['s3_urls'])
@@ -545,14 +559,17 @@ class S3JobManager:
                 item['message'] = f'Persistence error: {exc}'
         return item
 
-    def _download(self, url: str):
+    def _download(self, url: str, dataset_id: str | None = None):
         parsed = urlparse(url)
-        referer = f'{parsed.scheme}://{parsed.netloc}/' if parsed.scheme and parsed.netloc else None
         hostname = (parsed.hostname or '').lower()
+        referer = f'{parsed.scheme}://{parsed.netloc}/' if parsed.scheme and parsed.netloc else None
         timeout_plan = (20, 35, 50)
-        if hostname.endswith('asos-media.com'):
+        backoff_plan: tuple[int, ...] = ()
+        proxy_used = network_proxy.proxy_enabled()
+        if hostname.endswith('asos-media.com') or str(dataset_id or '').strip().lower() == 'asos':
             referer = 'https://www.asos.com/'
-            timeout_plan = (25, 45, 60)
+            timeout_plan = (10, 20, 30)
+            backoff_plan = (1, 3)
         elif hostname.endswith('ltwebstatic.com'):
             referer = 'https://us.shein.com/'
 
@@ -571,10 +588,22 @@ class S3JobManager:
             headers['Referer'] = referer
 
         req = Request(url, headers=headers)
+        opener = network_proxy.build_urllib_opener(use_proxy=proxy_used)
         last_error = None
-        for timeout_seconds in timeout_plan:
+        last_meta = {
+            'hostname': hostname,
+            'proxy_used': proxy_used,
+            'proxy_mode': 'proxy' if proxy_used else 'direct',
+            'attempt_count': 0,
+            'timeout_seconds': timeout_plan[-1],
+            'error_type': None,
+            'http_status': None,
+        }
+        for index, timeout_seconds in enumerate(timeout_plan, start=1):
+            last_meta['attempt_count'] = index
+            last_meta['timeout_seconds'] = timeout_seconds
             try:
-                with urlopen(req, timeout=timeout_seconds) as resp:
+                with opener.open(req, timeout=timeout_seconds) as resp:
                     chunks = []
                     while True:
                         chunk = resp.read(1024 * 256)
@@ -585,12 +614,71 @@ class S3JobManager:
                     content_type = resp.headers.get_content_type()
                 if not data:
                     raise RuntimeError('Empty content')
-                return data, content_type
+                last_meta['error_type'] = None
+                last_meta['http_status'] = None
+                return data, content_type, dict(last_meta)
+            except HTTPError as exc:
+                last_error = exc
+                last_meta['http_status'] = int(getattr(exc, 'code', 0) or 0) or None
+                last_meta['error_type'] = 'http_403' if last_meta['http_status'] == 403 else 'http_error'
+                if last_meta['http_status'] != 403 or index >= len(timeout_plan):
+                    break
             except (TimeoutError, socket.timeout) as exc:
                 last_error = exc
+                last_meta['error_type'] = 'timeout'
+                last_meta['http_status'] = None
+                if index >= len(timeout_plan):
+                    break
+            except URLError as exc:
+                last_error = exc
+                reason = getattr(exc, 'reason', None)
+                if isinstance(reason, socket.timeout):
+                    last_meta['error_type'] = 'timeout'
+                else:
+                    last_meta['error_type'] = 'network_error'
+                last_meta['http_status'] = None
+                if index >= len(timeout_plan):
+                    break
             except Exception as exc:
                 last_error = exc
-        raise last_error or RuntimeError('Download failed')
+                last_meta['error_type'] = 'network_error'
+                last_meta['http_status'] = None
+                if index >= len(timeout_plan):
+                    break
+
+            if index <= len(backoff_plan):
+                time.sleep(backoff_plan[index - 1])
+
+        if last_error is None:
+            last_error = RuntimeError('Download failed')
+        try:
+            setattr(last_error, 'download_meta', dict(last_meta))
+        except Exception:
+            pass
+        raise last_error
+
+    def _merge_download_stats_unlocked(self, current: S3JobState, item: dict[str, Any]) -> None:
+        item_stats = item.get('download_stats')
+        if not isinstance(item_stats, dict):
+            return
+        hostname = str(item_stats.get('hostname') or 'unknown')
+        proxy_mode = str(item_stats.get('proxy_mode') or ('proxy' if item_stats.get('proxy_used') else 'direct'))
+        error_type = str(item_stats.get('error_type') or '')
+        item_status = str(item.get('status') or '').lower()
+        if item_status in {'uploaded', PARTIAL_UPLOAD_STATUS}:
+            result_status = 'success'
+        elif item_status == 'skipped':
+            result_status = 'skipped'
+        elif error_type:
+            result_status = error_type
+        else:
+            result_status = 'failed'
+        if current.download_stats is None or not isinstance(current.download_stats, dict):
+            current.download_stats = {'by_host': {}}
+        by_host = current.download_stats.setdefault('by_host', {})
+        host_entry = by_host.setdefault(hostname, {'proxy_mode': {}})
+        proxy_entry = host_entry['proxy_mode'].setdefault(proxy_mode, {})
+        proxy_entry[result_status] = int(proxy_entry.get(result_status, 0) or 0) + 1
 
     def _object_exists(self, s3, bucket: str, key: str):
         try:

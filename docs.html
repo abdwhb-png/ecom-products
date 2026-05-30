@@ -201,7 +201,7 @@
         <h1>Fast Fashion Dashboard API</h1>
         <p>
           Cette documentation reflète désormais une spec OpenAPI plus riche : schémas, paramètres, réponses, sécurité Bearer par endpoint protégé,
-          et endpoints publics séparés pour <strong>/openapi.json</strong> et <strong>/healthz</strong>.
+          endpoints publics séparés pour <strong>/openapi.json</strong> et <strong>/healthz</strong>, et métadonnées sûres sur l’egress proxy / la politique ASOS côté S3.
         </p>
       </section>
 
@@ -218,6 +218,7 @@
             <li>Les endpoints métier <code class="inline">/api/*</code> exigent <code class="inline">Authorization: Bearer &lt;token&gt;</code> quand <code class="inline">FAST_FASHION_API_TOKEN</code> est défini.</li>
             <li>Les endpoints JSON S3 (<code class="inline">/api/s3/*</code>) acceptent aussi ce Bearer token pour l’automatisation distante; la page HTML <code class="inline">/s3</code> continue d’utiliser son cookie d’accès court vécu pour l’UI.</li>
             <li>La configuration S3 effective est désormais lue depuis les variables d’environnement du serveur (<code class="inline">AWS_BUCKET</code>, <code class="inline">AWS_PREFIX</code>, <code class="inline">AWS_ENDPOINT_URL</code>, <code class="inline">AWS_URL</code>) au lieu d’être persistée via l’API.</li>
+            <li>Le backend peut aussi activer un proxy d’egress applicatif pour les fetchs HTTP(S) tiers via <code class="inline">FAST_FASHION_PROXY_HOST</code>, <code class="inline">FAST_FASHION_PROXY_PORT</code>, <code class="inline">FAST_FASHION_PROXY_LOGIN</code> et <code class="inline">FAST_FASHION_PROXY_PASSWORD</code>. Ces secrets restent côté serveur; l’API n’expose qu’un état dérivé sûr.</li>
             <li>La page <code class="inline">/s3</code> sépare maintenant trois familles de jobs : upload, migration d’URL, cleanup d’état S3.</li>
             <li>Chaque famille suit le même cycle : preview persisté en <code class="inline">dry_run=true</code>, lancement réel en <code class="inline">dry_run=false</code>, arrêt, détail, historique.</li>
             <li>Le dashboard HTML peut rester public même si l’API est privée.</li>
@@ -237,6 +238,7 @@
             <tr><th>S3 upload jobs</th><td><code class="inline">/api/s3/upload-jobs</code></td></tr>
             <tr><th>S3 URL migration jobs</th><td><code class="inline">/api/s3/url-migration-jobs</code></td></tr>
             <tr><th>S3 state cleanup jobs</th><td><code class="inline">/api/s3/state-cleanup-jobs</code></td></tr>
+            <tr><th>Proxy state sûr</th><td><code class="inline">proxy_enabled</code>, <code class="inline">egress_proxy_mode</code>, <code class="inline">asos_max_concurrency</code></td></tr>
           </table>
         </section>
       </div>
@@ -316,7 +318,7 @@
           <article class="card" style="background: var(--panel-2);">
             <div class="endpoint"><span class="method get">GET</span><span class="path">/api/s3/upload-jobs</span></div>
             <div class="endpoint"><span class="method post">POST</span><span class="path">/api/s3/upload-jobs</span></div>
-            <p class="muted small">Historique et création des jobs d’upload. Le preview passe par <code class="inline">dry_run=true</code>.</p>
+            <p class="muted small">Historique et création des jobs d’upload. Le preview passe par <code class="inline">dry_run=true</code>. Les créations acceptent aussi un <code class="inline">source_filter</code> optionnel pour cibler un produit déterministe (id exact ou fragment insensible à la casse du nom / URL / image source).</p>
           </article>
           <article class="card" style="background: var(--panel-2);">
             <div class="endpoint"><span class="method get">GET</span><span class="path">/api/s3/url-migration-jobs</span></div>

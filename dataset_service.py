@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
+import network_proxy
+
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / 'data'
 DOWNLOAD_DIR = DATA_DIR / 'downloads'
@@ -54,8 +56,9 @@ def _write_response_to_file(url: str, destination: Path, headers: Optional[Dict[
     destination.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = destination.with_suffix(destination.suffix + '.tmp')
     request = urllib.request.Request(url, headers=headers or {'User-Agent': 'Mozilla/5.0'})
+    opener = network_proxy.build_urllib_opener(use_proxy=network_proxy.proxy_enabled())
 
-    with urllib.request.urlopen(request, timeout=120) as response:
+    with opener.open(request, timeout=120) as response:
         with tmp_path.open('wb') as handle:
             shutil.copyfileobj(response, handle)
 
