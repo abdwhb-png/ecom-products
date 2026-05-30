@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import socket
 import threading
 import time
@@ -293,6 +294,12 @@ class S3JobManager:
             current.last_message = str(message)
         self._persist_jobs_best_effort_unlocked()
 
+    def _notify_terminal_job_best_effort(self, job: dict[str, Any]) -> None:
+        try:
+            self._send_terminal_notification(job)
+        except Exception:
+            return
+
     def _run_custom_job(self, job_id: str, runner: Callable[[Callable[[dict[str, Any]], None], threading.Event], None], cancel_event: threading.Event):
         def record(item: dict[str, Any]):
             with self._mutex:
@@ -306,6 +313,8 @@ class S3JobManager:
                 current.status = 'cancelled' if current.cancel_requested else 'completed'
                 current.ended_at = time.time()
                 self._persist_jobs_best_effort_unlocked()
+                terminal_job = asdict(current)
+            self._notify_terminal_job_best_effort(terminal_job)
         except Exception as exc:
             with self._mutex:
                 current = self._jobs[job_id]
@@ -314,19 +323,22 @@ class S3JobManager:
                     current.last_message = str(exc)
                     current.ended_at = time.time()
                     self._persist_jobs_best_effort_unlocked()
-                    return
-                current.status = 'failed'
-                current.error = str(exc)
-                current.last_message = str(exc)
-                current.ended_at = time.time()
-                if current.items is None:
-                    current.items = []
-                current.items.append({
-                    'status': 'failed',
-                    'message': str(exc),
-                    'timestamp': time.time(),
-                })
-                self._persist_jobs_best_effort_unlocked()
+                    terminal_job = asdict(current)
+                else:
+                    current.status = 'failed'
+                    current.error = str(exc)
+                    current.last_message = str(exc)
+                    current.ended_at = time.time()
+                    if current.items is None:
+                        current.items = []
+                    current.items.append({
+                        'status': 'failed',
+                        'message': str(exc),
+                        'timestamp': time.time(),
+                    })
+                    self._persist_jobs_best_effort_unlocked()
+                    terminal_job = asdict(current)
+            self._notify_terminal_job_best_effort(terminal_job)
 
     def _run_job(self, job_id: str, rows: list[dict[str, Any]], s3_client_factory, resolve_source_url, on_uploaded):
         with self._mutex:
@@ -392,6 +404,8 @@ class S3JobManager:
                 current.status = 'cancelled' if current.cancel_requested else 'completed'
                 current.ended_at = time.time()
                 self._persist_jobs_best_effort_unlocked()
+                terminal_job = asdict(current)
+            self._notify_terminal_job_best_effort(terminal_job)
         except Exception as exc:
             with self._mutex:
                 current = self._jobs[job_id]
@@ -400,6 +414,8 @@ class S3JobManager:
                 current.last_message = str(exc)
                 current.ended_at = time.time()
                 self._persist_jobs_best_effort_unlocked()
+                terminal_job = asdict(current)
+            self._notify_terminal_job_best_effort(terminal_job)
 
     def _process_row(self, s3, job: S3JobState, row: dict[str, Any], resolve_source_url, on_uploaded):
         item = {
@@ -572,6 +588,56 @@ class S3JobManager:
                 item['saved_on_s3'] = False
                 item['message'] = f'Persistence error: {exc}'
         return item
+
+    def _notifications_enabled(self) -> bool:
+        return bool(os.getenv('TELEGRAM_BOT_TOKEN', '').strip() and os.getenv('TELEGRAM_CHAT_ID', '').strip())
+
+    def _send_terminal_notification(self, job: dict[str, Any]) -> None:
+        if not self._notifications_enabled():
+            return
+        token = os.getenv('TELEGRAM_BOT_TOKEN', '').strip()
+        chat_id = os.getenv('TELEGRAM_CHAT_ID', '').strip()
+        if not token or not chat_id:
+            return
+        family = str(job.get('job_family') or job.get('kind') or 'job').replace('_', ' ')
+        status = str(job.get('status') or 'completed')
+        dataset_id = str(job.get('dataset_id') or 'all')
+        job_id = str(job.get('job_id') or '')
+        total = int(job.get('total') or 0)
+        processed = int(job.get('processed') or 0)
+        uploaded = int(job.get('uploaded') or 0)
+        skipped = int(job.get('skipped') or 0)
+        failed = int(job.get('failed') or 0)
+        excluded_complete_count = int(job.get('excluded_complete_count') or 0)
+        dry_run = bool(job.get('dry_run'))
+        error = str(job.get('error') or job.get('last_message') or '').strip()
+        prefix = '🔎' if dry_run else ('✅' if status == 'completed' else '⚠️' if status == 'cancelled' else '❌')
+        message_lines = [
+            f"{prefix} *S3 job terminé*",
+            f"- ID: `{job_id}`",
+            f"- Type: *{family}*",
+            f"- Dataset: *{dataset_id}*",
+            f"- Statut: *{status}*{' (dry-run)' if dry_run else ''}",
+            f"- Progression: *{processed}/{total}*",
+            f"- Réussis: *{uploaded}* · Ignorés: *{skipped}* · Erreurs: *{failed}*",
+        ]
+        if excluded_complete_count > 0:
+            message_lines.append(f"- Déjà complets exclus: *{excluded_complete_count}*")
+        if error and status in {'failed', 'cancelled'}:
+            message_lines.append(f"- Détail: `{error[:500]}`")
+        payload = {
+            'chat_id': chat_id,
+            'text': '\n'.join(message_lines),
+            'parse_mode': 'Markdown',
+        }
+        request = Request(
+            f'https://api.telegram.org/bot{token}/sendMessage',
+            data=json.dumps(payload).encode('utf-8'),
+            headers={'Content-Type': 'application/json; charset=utf-8'},
+            method='POST',
+        )
+        with urlopen(request, timeout=10) as response:
+            response.read()
 
     def _download(self, url: str, dataset_id: str | None = None):
         parsed = urlparse(url)

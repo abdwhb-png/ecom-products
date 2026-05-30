@@ -159,6 +159,7 @@ S3 / AWS notes:
 - `AWS_URL` = public base URL returned by the app and used by the migration script/UI to rewrite stored `s3://...` values into public URLs
 - `AWS_REGION` / `AWS_DEFAULT_REGION` = optional region hint; R2 resolves to `auto` when `AWS_ENDPOINT_URL` points at `*.r2.cloudflarestorage.com`
 - `FAST_FASHION_S3_ADMIN_PASSWORD` = admin password for the protected S3 area (upload jobs, URL migration jobs, state cleanup jobs, S3 config UI/API)
+- `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` = optional simple completion notifications for any finished S3 job (upload, URL migration, state cleanup); when both are set, the backend sends a Telegram message on terminal job states (`completed`, `failed`, `cancelled`)
 - `FAST_FASHION_PROXY_HOST` / `FAST_FASHION_PROXY_PORT` / `FAST_FASHION_PROXY_LOGIN` / `FAST_FASHION_PROXY_PASSWORD` = optional authenticated outbound proxy used by application-managed third-party web fetches (dataset downloads and source-image downloads); all 4 must be set together
 - `FAST_FASHION_ASOS_PROXY_MAX_CONCURRENCY` = optional env override for the ASOS upload concurrency cap when the proxy is enabled; defaults to `8` and is clamped to the generic upper bound `24`
 - S3/R2 config is environment-authoritative: the admin UI reads effective values from env and no longer persists bucket/prefix/endpoint/public URL overrides in SQLite
@@ -178,6 +179,7 @@ Dashboard notes:
 - upload jobs accept an optional `source_filter` so `/s3` can target a specific product/resource deterministically for preview or live validation (exact product id or a case-insensitive fragment from the name / URL / source image URL)
 - upload jobs also accept `selection_mode`: `pending` (default, only unsynced + partial products), `partial` (repair only partially synced products), or `all` (rescan everything, including already saved products)
 - upload job state now exposes `excluded_complete_count` so the UI can show how many already-complete products were skipped before the worker started
+- when `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are configured, every finished S3 job sends a simple Telegram notification summarizing job id, family, dataset, final status, progress, and any excluded-complete count
 - ASOS source-image downloads now use the exact timeout plan `10/20/30` seconds with controlled retry backoff `1/3` seconds for retry-eligible `403`/timeout/network failures
 - protected S3 config/job responses now expose only safe proxy-derived state such as `proxy_enabled`, `egress_proxy_mode`, `asos_max_concurrency`, and compact per-host `download_stats`; raw proxy secrets are never exposed
 - S3 status/config GET endpoints now accept the deployment bearer token as well as the short-lived S3 UI cookie, matching the documented API auth model for remote API checks
