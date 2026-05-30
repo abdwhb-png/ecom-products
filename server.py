@@ -2640,16 +2640,7 @@ class Handler(SimpleHTTPRequestHandler):
         job_id = build_job_id(job_family, dataset_id if dataset_id and dataset_id != 'all' else None)
         if job_family == UPLOAD_JOB_FAMILY:
             active_same_dataset = S3_JOB_MANAGER.count_active_jobs(job_family=UPLOAD_JOB_FAMILY, dataset_id=dataset_id)
-            source_filter = str(payload.get('source_filter') or '').strip()
-            requested_limit = parse_positive_int(payload.get('limit', 100), 100)
             selection_mode = str(payload.get('selection_mode') or 'pending').strip().lower() or 'pending'
-            if active_same_dataset > 0 and not source_filter and requested_limit > 1:
-                return error_response(
-                    self,
-                    f"Un job upload {dataset_id} est déjà actif. Pour éviter les collisions et la fragmentation, lance soit un ciblage précis via source_filter, soit attends qu'il se termine.",
-                    HTTPStatus.CONFLICT,
-                    code='s3_upload_dataset_busy',
-                )
             claim_db_conn = None
 
             def _bind_claim_conn(conn):

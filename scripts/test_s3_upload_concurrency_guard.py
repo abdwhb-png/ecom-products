@@ -116,14 +116,21 @@ def main() -> int:
             dry_run=False,
         )
         manager._jobs[active_job.job_id] = active_job
+        claim_conn = server.db_connect()
+        try:
+            claim_conn.execute(
+                'INSERT INTO s3_job_claims (dataset_id, product_id, job_id, claimed_at) VALUES (?, ?, ?, ?)',
+                ('shein', 'prod-1', active_job.job_id, 1.0),
+            )
+            claim_conn.execute(
+                'INSERT INTO s3_job_claims (dataset_id, product_id, job_id, claimed_at) VALUES (?, ?, ?, ?)',
+                ('shein', 'prod-2', active_job.job_id, 1.0),
+            )
+            claim_conn.commit()
+        finally:
+            claim_conn.close()
 
         broad_handler = make_handler({'dataset_id': 'shein', 'limit': 50, 'concurrency': 1, 'selection_mode': 'pending'})
-        server.Handler.handle_s3_family_job_create(broad_handler, 'upload')
-        broad_payload = read_json(broad_handler)
-        assert broad_handler._status == 409, broad_payload
-        assert broad_payload['error']['code'] == 's3_upload_dataset_busy', broad_payload
-
-        targeted_handler = make_handler({'dataset_id': 'shein', 'limit': 1, 'concurrency': 1, 'source_filter': 'prod-4', 'selection_mode': 'pending'})
         original_start_job = manager.start_job
         captured = {}
 
@@ -148,12 +155,21 @@ def main() -> int:
 
         manager.start_job = fake_start_job  # type: ignore[assignment]
         try:
-            server.Handler.handle_s3_family_job_create(targeted_handler, 'upload')
+            server.Handler.handle_s3_family_job_create(broad_handler, 'upload')
         finally:
             manager.start_job = original_start_job  # type: ignore[assignment]
-        targeted_payload = read_json(targeted_handler)
-        assert targeted_handler._status == 202, targeted_payload
-        assert [row['id'] for row in captured['rows']] == ['prod-4'], captured
+        broad_payload = read_json(broad_handler)
+        assert broad_handler._status == 202, broad_payload
+        returned_ids = {str(row['id']) for row in captured['rows']}
+        assert 'prod-1' not in returned_ids, captured
+        assert 'prod-2' not in returned_ids, captured
+        assert returned_ids, captured
+
+        no_free_handler = make_handler({'dataset_id': 'shein', 'limit': 1, 'concurrency': 1, 'source_filter': 'prod-1', 'selection_mode': 'pending'})
+        server.Handler.handle_s3_family_job_create(no_free_handler, 'upload')
+        no_free_payload = read_json(no_free_handler)
+        assert no_free_handler._status == 409, no_free_payload
+        assert no_free_payload['error']['code'] == 's3_upload_no_free_products', no_free_payload
 
     server.S3_JOB_MANAGER = original_manager
     if previous_db_env is None:
@@ -166,7 +182,7 @@ def main() -> int:
     else:
         os.environ['AWS_BUCKET'] = previous_bucket
 
-    print('OK: upload concurrency guard blocks broad same-dataset runs but still allows targeted free-product launches')
+    print('OK: concurrent upload creation still works on free products and only blocks when no free products remain')
     return 0
 
 
