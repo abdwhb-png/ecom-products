@@ -98,6 +98,10 @@ def main() -> int:
         collected = collect_upload_candidates({'dataset_id': 'asos', 'limit': 1, 'concurrency': 9}, context)
         assert collected['concurrency'] == 8, collected
 
+        os.environ['FAST_FASHION_ASOS_PROXY_MAX_CONCURRENCY'] = '12'
+        collected = collect_upload_candidates({'dataset_id': 'asos', 'limit': 1, 'concurrency': 24}, context)
+        assert collected['concurrency'] == 12, collected
+
         sleeps: list[float] = []
         s3_jobs.time.sleep = lambda seconds: sleeps.append(seconds)  # type: ignore[assignment]
 

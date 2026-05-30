@@ -160,6 +160,7 @@ S3 / AWS notes:
 - `AWS_REGION` / `AWS_DEFAULT_REGION` = optional region hint; R2 resolves to `auto` when `AWS_ENDPOINT_URL` points at `*.r2.cloudflarestorage.com`
 - `FAST_FASHION_S3_ADMIN_PASSWORD` = admin password for the protected S3 area (upload jobs, URL migration jobs, state cleanup jobs, S3 config UI/API)
 - `FAST_FASHION_PROXY_HOST` / `FAST_FASHION_PROXY_PORT` / `FAST_FASHION_PROXY_LOGIN` / `FAST_FASHION_PROXY_PASSWORD` = optional authenticated outbound proxy used by application-managed third-party web fetches (dataset downloads and source-image downloads); all 4 must be set together
+- `FAST_FASHION_ASOS_PROXY_MAX_CONCURRENCY` = optional env override for the ASOS upload concurrency cap when the proxy is enabled; defaults to `8` and is clamped to the generic upper bound `24`
 - S3/R2 config is environment-authoritative: the admin UI reads effective values from env and no longer persists bucket/prefix/endpoint/public URL overrides in SQLite
 - the S3 admin page now exposes three separated job families: uploads, URL migrations, and stale-state cleanup
 - every family follows the same lifecycle: `preview` via `dry_run=true`, `start` via `dry_run=false`, `stop`, `detail`, and `history`
@@ -173,7 +174,7 @@ Dashboard notes:
 - the category stat on the homepage reflects the total number of available categories from `/api/categories` pagination metadata, not just the current category-options page
 - the category select itself is paginated server-side in the frontend to stay responsive on very large datasets such as ASOS
 - the S3 job detail modal paginates processed items 50 per page and uses a fixed top-right close icon
-- ASOS S3 jobs now use a proxy-aware concurrency cap server-side: max `2` without proxy, max `8` when the application egress proxy is configured
+- ASOS S3 jobs now use a proxy-aware concurrency cap server-side: max `2` without proxy, and when the application egress proxy is configured the cap defaults to `8` but can be overridden with `FAST_FASHION_ASOS_PROXY_MAX_CONCURRENCY` (still capped globally at `24`)
 - upload jobs accept an optional `source_filter` so `/s3` can target a specific product/resource deterministically for preview or live validation (exact product id or a case-insensitive fragment from the name / URL / source image URL)
 - ASOS source-image downloads now use the exact timeout plan `10/20/30` seconds with controlled retry backoff `1/3` seconds for retry-eligible `403`/timeout/network failures
 - protected S3 config/job responses now expose only safe proxy-derived state such as `proxy_enabled`, `egress_proxy_mode`, `asos_max_concurrency`, and compact per-host `download_stats`; raw proxy secrets are never exposed

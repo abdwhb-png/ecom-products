@@ -14,6 +14,9 @@ PROXY_ENV_KEYS = (
     'FAST_FASHION_PROXY_PASSWORD',
 )
 
+DEFAULT_ASOS_DIRECT_MAX_CONCURRENCY = 2
+DEFAULT_ASOS_PROXY_MAX_CONCURRENCY = 8
+
 
 @dataclass(frozen=True)
 class ProxyConfig:
@@ -79,11 +82,24 @@ def build_proxy_url(config: ProxyConfig | None = None) -> str | None:
     return f'http://{login}:{password}@{proxy.host}:{proxy.port}'
 
 
+def resolve_asos_proxy_max_concurrency(default: int = DEFAULT_ASOS_PROXY_MAX_CONCURRENCY) -> int:
+    try:
+        value = int(_read_env('FAST_FASHION_ASOS_PROXY_MAX_CONCURRENCY') or str(default))
+    except Exception:
+        value = default
+    return max(1, min(24, value))
+
+
+def asos_max_concurrency() -> int:
+    return resolve_asos_proxy_max_concurrency() if proxy_enabled() else DEFAULT_ASOS_DIRECT_MAX_CONCURRENCY
+
+
 def public_proxy_state() -> dict[str, Any]:
     enabled = proxy_enabled()
     return {
         'proxy_enabled': enabled,
         'egress_proxy_mode': 'proxy' if enabled else 'direct',
+        'asos_max_concurrency': asos_max_concurrency(),
     }
 
 

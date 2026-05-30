@@ -140,12 +140,19 @@ def main() -> int:
             os.environ['FAST_FASHION_PROXY_PORT'] = '823'
             os.environ['FAST_FASHION_PROXY_LOGIN'] = 'proxy-user'
             os.environ['FAST_FASHION_PROXY_PASSWORD'] = 'proxy-pass'
+            os.environ.pop('FAST_FASHION_ASOS_PROXY_MAX_CONCURRENCY', None)
             get_handler_proxy = make_handler()
             server.Handler.handle_s3_config_get(get_handler_proxy)
             proxy_payload = read_json(get_handler_proxy)
             assert proxy_payload['data']['proxy_enabled'] is True, proxy_payload
             assert proxy_payload['data']['egress_proxy_mode'] == 'proxy', proxy_payload
             assert proxy_payload['data']['asos_max_concurrency'] == 8, proxy_payload
+
+            os.environ['FAST_FASHION_ASOS_PROXY_MAX_CONCURRENCY'] = '12'
+            get_handler_proxy_custom = make_handler()
+            server.Handler.handle_s3_config_get(get_handler_proxy_custom)
+            proxy_custom_payload = read_json(get_handler_proxy_custom)
+            assert proxy_custom_payload['data']['asos_max_concurrency'] == 12, proxy_custom_payload
 
             manager = server.S3_JOB_MANAGER
             manager._jobs.clear()
@@ -193,7 +200,7 @@ def main() -> int:
 
                 create_handler_asos = make_handler({'dataset_id': 'asos', 'limit': 1, 'concurrency': 24})
                 server.Handler.handle_s3_family_job_create(create_handler_asos, 'upload')
-                assert captured['concurrency'] == 8, captured
+                assert captured['concurrency'] == 12, captured
 
                 # Run synchronously with env config and no stale DB override.
                 future = original_start_job(
@@ -227,7 +234,7 @@ def main() -> int:
             else:
                 os.environ[key] = value
 
-    print('OK: S3 config is env-authoritative and upload jobs use env-derived bucket/prefix and the prudent proxy-aware ASOS cap')
+    print('OK: S3 config is env-authoritative and upload jobs use env-derived bucket/prefix and a configurable prudent proxy-aware ASOS cap')
     return 0
 
 

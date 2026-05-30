@@ -201,7 +201,7 @@
         <h1>Fast Fashion Dashboard API</h1>
         <p>
           Cette documentation reflète désormais une spec OpenAPI plus riche : schémas, paramètres, réponses, sécurité Bearer par endpoint protégé,
-          endpoints publics séparés pour <strong>/openapi.json</strong> et <strong>/healthz</strong>, et métadonnées sûres sur l’egress proxy / la politique ASOS côté S3 (max 2 en direct, max 8 avec proxy).
+          endpoints publics séparés pour <strong>/openapi.json</strong> et <strong>/healthz</strong>, et métadonnées sûres sur l’egress proxy / la politique ASOS côté S3 (max 2 en direct, cap proxy configurable avec défaut à 8).
         </p>
       </section>
 
@@ -219,6 +219,7 @@
             <li>Les endpoints JSON S3 (<code class="inline">/api/s3/*</code>) acceptent aussi ce Bearer token pour l’automatisation distante; la page HTML <code class="inline">/s3</code> continue d’utiliser son cookie d’accès court vécu pour l’UI.</li>
             <li>La configuration S3 effective est désormais lue depuis les variables d’environnement du serveur (<code class="inline">AWS_BUCKET</code>, <code class="inline">AWS_PREFIX</code>, <code class="inline">AWS_ENDPOINT_URL</code>, <code class="inline">AWS_URL</code>) au lieu d’être persistée via l’API.</li>
             <li>Le backend peut aussi activer un proxy d’egress applicatif pour les fetchs HTTP(S) tiers via <code class="inline">FAST_FASHION_PROXY_HOST</code>, <code class="inline">FAST_FASHION_PROXY_PORT</code>, <code class="inline">FAST_FASHION_PROXY_LOGIN</code> et <code class="inline">FAST_FASHION_PROXY_PASSWORD</code>. Ces secrets restent côté serveur; l’API n’expose qu’un état dérivé sûr.</li>
+            <li>Quand ce proxy est activé, le cap de concurrence ASOS côté upload est configurable via <code class="inline">FAST_FASHION_ASOS_PROXY_MAX_CONCURRENCY</code> (défaut <code class="inline">8</code>, plafond global <code class="inline">24</code>).</li>
             <li>La page <code class="inline">/s3</code> sépare maintenant trois familles de jobs : upload, migration d’URL, cleanup d’état S3.</li>
             <li>Chaque famille suit le même cycle : preview persisté en <code class="inline">dry_run=true</code>, lancement réel en <code class="inline">dry_run=false</code>, arrêt, détail, historique.</li>
             <li>Le dashboard HTML peut rester public même si l’API est privée.</li>

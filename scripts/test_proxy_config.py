@@ -16,6 +16,7 @@ ENV_KEYS = [
     'FAST_FASHION_PROXY_PORT',
     'FAST_FASHION_PROXY_LOGIN',
     'FAST_FASHION_PROXY_PASSWORD',
+    'FAST_FASHION_ASOS_PROXY_MAX_CONCURRENCY',
 ]
 
 
@@ -42,6 +43,7 @@ def main() -> int:
         state = network_proxy.public_proxy_state()
         assert state['proxy_enabled'] is False, state
         assert state['egress_proxy_mode'] == 'direct', state
+        assert state['asos_max_concurrency'] == 2, state
 
         set_env({'FAST_FASHION_PROXY_HOST': 'proxy.example.test'})
         try:
@@ -74,6 +76,12 @@ def main() -> int:
         state = network_proxy.public_proxy_state()
         assert state['proxy_enabled'] is True, state
         assert state['egress_proxy_mode'] == 'proxy', state
+        assert state['asos_max_concurrency'] == 8, state
+
+        os.environ['FAST_FASHION_ASOS_PROXY_MAX_CONCURRENCY'] = '12'
+        state = network_proxy.public_proxy_state()
+        assert state['asos_max_concurrency'] == 12, state
+
         serialized = str(state)
         assert 'proxy.example.test' not in serialized, serialized
         assert 'user@example' not in serialized, serialized
