@@ -290,6 +290,12 @@ OPENAPI_SPEC = {
                 'description': 'Number of S3 job items returned per page.',
                 'schema': {'type': 'integer', 'minimum': 1, 'maximum': 50, 'default': 12},
             },
+            'pageSizeS3JobsHistory': {
+                'name': 'pageSize',
+                'in': 'query',
+                'description': 'Number of S3 jobs returned per history page.',
+                'schema': {'type': 'integer', 'minimum': 1, 'maximum': 100, 'default': 20},
+            },
         },
         'schemas': {
             'OpenApiDocument': {'type': 'object', 'additionalProperties': True},
@@ -628,10 +634,11 @@ OPENAPI_SPEC = {
             },
             'S3JobsListResponse': {
                 'type': 'object',
-                'required': ['data', 'config'],
+                'required': ['data', 'config', 'pagination'],
                 'properties': {
                     'data': {'type': 'array', 'items': {'$ref': '#/components/schemas/S3JobState'}},
                     'config': {'$ref': '#/components/schemas/S3Config'},
+                    'pagination': {'$ref': '#/components/schemas/Pagination'},
                 },
             },
             'S3JobDetailPayload': {
@@ -1012,8 +1019,12 @@ OPENAPI_SPEC = {
                 'tags': ['s3'],
                 'operationId': 'listS3UploadJobs',
                 'summary': 'List upload jobs',
-                'description': 'Returns only S3 upload job history plus the effective non-secret config.',
+                'description': 'Returns only paginated S3 upload job history plus the effective non-secret config. Default history page size is 20.',
                 'security': [{'bearerAuth': []}],
+                'parameters': [
+                    {'$ref': '#/components/parameters/page'},
+                    {'$ref': '#/components/parameters/pageSizeS3JobsHistory'},
+                ],
                 'responses': {
                     '200': {
                         'description': 'S3 upload jobs list.',
@@ -1043,6 +1054,7 @@ OPENAPI_SPEC = {
                     },
                     '400': {'$ref': '#/components/responses/BadRequest'},
                     '401': {'$ref': '#/components/responses/Unauthorized'},
+                    '409': {'$ref': '#/components/responses/BadRequest'},
                 },
             },
         },
@@ -1111,8 +1123,12 @@ OPENAPI_SPEC = {
                 'tags': ['s3'],
                 'operationId': 'listS3UrlMigrationJobs',
                 'summary': 'List URL migration jobs',
-                'description': 'Returns only URL migration job history plus the effective non-secret config.',
+                'description': 'Returns only paginated URL migration job history plus the effective non-secret config. Default history page size is 20.',
                 'security': [{'bearerAuth': []}],
+                'parameters': [
+                    {'$ref': '#/components/parameters/page'},
+                    {'$ref': '#/components/parameters/pageSizeS3JobsHistory'},
+                ],
                 'responses': {
                     '200': {
                         'description': 'URL migration jobs list.',
@@ -1168,8 +1184,12 @@ OPENAPI_SPEC = {
                 'tags': ['s3'],
                 'operationId': 'listS3StateCleanupJobs',
                 'summary': 'List stale-state cleanup jobs',
-                'description': 'Returns only stale-state cleanup job history plus the effective non-secret config.',
+                'description': 'Returns only paginated stale-state cleanup job history plus the effective non-secret config. Default history page size is 20.',
                 'security': [{'bearerAuth': []}],
+                'parameters': [
+                    {'$ref': '#/components/parameters/page'},
+                    {'$ref': '#/components/parameters/pageSizeS3JobsHistory'},
+                ],
                 'responses': {
                     '200': {
                         'description': 'Cleanup jobs list.',
@@ -1365,11 +1385,12 @@ def persist_upload_job_item(*, dataset_id: str, bucket: str, row: dict[str, Any]
         state_conn.close()
 
 
-def make_s3_job_context() -> dict[str, Any]:
+def make_s3_job_context(db_conn=None) -> dict:
     return {
         'root': ROOT,
         'allowed_datasets': ALLOWED_DATASETS,
         'db_connect': db_connect,
+        'db_conn': db_conn,
         'effective_s3_config': effective_s3_config,
         'resolve_aws_public_url': resolve_aws_public_url,
         'resolve_aws_bucket': resolve_aws_bucket,
@@ -1598,6 +1619,7 @@ def save_s3_state(conn=None):
 def db_connect():
     conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA busy_timeout = 30000')
     # Register an SQL-accessible normalization function for accent- and case-insensitive comparisons
     try:
         conn.create_function('unaccent', 1, _sql_unaccent)
@@ -1664,6 +1686,18 @@ def db_connect():
         '''
     )
     conn.execute('CREATE INDEX IF NOT EXISTS idx_s3_jobs_started_at ON s3_jobs(started_at DESC)')
+    conn.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS s3_job_claims (
+            dataset_id TEXT NOT NULL,
+            product_id TEXT NOT NULL,
+            job_id TEXT NOT NULL,
+            claimed_at REAL NOT NULL,
+            PRIMARY KEY (dataset_id, product_id)
+        )
+        '''
+    )
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_s3_job_claims_job_id ON s3_job_claims(job_id)')
     _maybe_migrate_legacy_s3_state(conn)
     _maybe_migrate_legacy_s3_jobs(conn)
     conn.commit()
@@ -2017,7 +2051,7 @@ def _save_s3_jobs_to_db(jobs: list[dict]) -> None:
         raise last_exc
 
 
-S3_JOB_MANAGER = S3JobManager(load_jobs_fn=_load_s3_jobs_from_db, save_jobs_fn=_save_s3_jobs_to_db)
+S3_JOB_MANAGER = S3JobManager(load_jobs_fn=_load_s3_jobs_from_db, save_jobs_fn=_save_s3_jobs_to_db, db_connect_fn=db_connect)
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -2571,8 +2605,13 @@ class Handler(SimpleHTTPRequestHandler):
     def handle_s3_family_jobs_list(self, job_family: str):
         self._s3_job_definition(job_family)
         load_s3_state(force=True)
+        query = parse_qs(urlparse(self.path).query)
+        page = parse_positive_int((query.get('page') or ['1'])[0], 1)
+        page_size = parse_positive_int((query.get('pageSize') or ['20'])[0], 20, maximum=100)
+        listed = S3_JOB_MANAGER.list_jobs(job_family=job_family, page=page, page_size=page_size)
         json_response(self, {
-            'data': [_publicize_job_payload(job) for job in S3_JOB_MANAGER.list_jobs(job_family=job_family)],
+            'data': [_publicize_job_payload(job) for job in listed['jobs']],
+            'pagination': listed['pagination'],
             'config': effective_s3_config(),
             'job_family': job_family,
             'family': self._s3_job_definition(job_family).api_meta(),
@@ -2596,21 +2635,74 @@ class Handler(SimpleHTTPRequestHandler):
         payload = self._read_json_body() if self.headers.get('Content-Length') else {}
         dry_run = parse_bool(payload.get('dry_run', payload.get('preview', False)))
         context = make_s3_job_context()
-        collected = definition.collector(payload, context)
-        dataset_id = str(collected.get('dataset_id') or '').strip()
+        initial_collected = definition.collector(payload, context)
+        dataset_id = str(initial_collected.get('dataset_id') or '').strip()
         job_id = build_job_id(job_family, dataset_id if dataset_id and dataset_id != 'all' else None)
+        if job_family == UPLOAD_JOB_FAMILY:
+            active_same_dataset = S3_JOB_MANAGER.count_active_jobs(job_family=UPLOAD_JOB_FAMILY, dataset_id=dataset_id)
+            source_filter = str(payload.get('source_filter') or '').strip()
+            requested_limit = parse_positive_int(payload.get('limit', 100), 100)
+            selection_mode = str(payload.get('selection_mode') or 'pending').strip().lower() or 'pending'
+            if active_same_dataset > 0 and not source_filter and requested_limit > 1:
+                return error_response(
+                    self,
+                    f"Un job upload {dataset_id} est déjà actif. Pour éviter les collisions et la fragmentation, lance soit un ciblage précis via source_filter, soit attends qu'il se termine.",
+                    HTTPStatus.CONFLICT,
+                    code='s3_upload_dataset_busy',
+                )
+            claim_db_conn = None
+
+            def _bind_claim_conn(conn):
+                nonlocal claim_db_conn, context
+                claim_db_conn = conn
+                context = make_s3_job_context(db_conn=conn)
+
+            def _collect_unclaimed(excluded_product_ids: set[str]) -> dict[str, Any]:
+                next_payload = dict(payload)
+                if excluded_product_ids:
+                    next_payload['_excluded_product_ids'] = sorted(excluded_product_ids)
+                return definition.collector(next_payload, context)
+
+            collected = S3_JOB_MANAGER.reserve_upload_candidates(
+                job_id=job_id,
+                dataset_id=dataset_id,
+                collector=_collect_unclaimed,
+                db_conn_binder=_bind_claim_conn,
+            )
+            if not collected.get('rows'):
+                if active_same_dataset > 0:
+                    return error_response(
+                        self,
+                        f"Aucun produit libre pour lancer un nouvel upload {dataset_id} maintenant. Un autre job actif a déjà réservé les candidats disponibles.",
+                        HTTPStatus.CONFLICT,
+                        code='s3_upload_no_free_products',
+                    )
+                if selection_mode != 'all':
+                    return error_response(
+                        self,
+                        f"Aucun produit candidat disponible pour {dataset_id} avec selection_mode={selection_mode}.",
+                        HTTPStatus.CONFLICT,
+                        code='s3_upload_no_candidates',
+                    )
+        else:
+            collected = initial_collected
         run_spec = definition.runner_builder(job_id, dry_run, collected, context)
         start_mode = run_spec.get('mode')
         kwargs = dict(run_spec.get('kwargs') or {})
-        if start_mode == 'start_job':
-            future = S3_JOB_MANAGER.start_job(**kwargs)
-        elif start_mode == 'start_custom_job':
-            initial_patch = dict(run_spec.get('initial_job_patch') or {})
-            future = S3_JOB_MANAGER.start_custom_job(**kwargs)
-            if initial_patch:
-                S3_JOB_MANAGER.update_job(job_id, **initial_patch)
-        else:
-            raise ValueError(f'Unsupported S3 job runner mode: {start_mode}')
+        try:
+            if start_mode == 'start_job':
+                future = S3_JOB_MANAGER.start_job(**kwargs)
+            elif start_mode == 'start_custom_job':
+                initial_patch = dict(run_spec.get('initial_job_patch') or {})
+                future = S3_JOB_MANAGER.start_custom_job(**kwargs)
+                if initial_patch:
+                    S3_JOB_MANAGER.update_job(job_id, **initial_patch)
+            else:
+                raise ValueError(f'Unsupported S3 job runner mode: {start_mode}')
+        except Exception:
+            if job_family == UPLOAD_JOB_FAMILY:
+                S3_JOB_MANAGER.release_job_claims(job_id)
+            raise
         json_response(self, {
             'data': _publicize_job_payload(S3_JOB_MANAGER.get_job(job_id)),
             'future': bool(future),

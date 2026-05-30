@@ -314,6 +314,17 @@ def rebuild_db(force_download: bool = False):
         )
         '''
     )
+    conn.execute(
+        '''
+        CREATE TABLE s3_job_claims (
+            dataset_id TEXT NOT NULL,
+            product_id TEXT NOT NULL,
+            job_id TEXT NOT NULL,
+            claimed_at REAL NOT NULL,
+            PRIMARY KEY (dataset_id, product_id)
+        )
+        '''
+    )
 
     def insert_many(rows):
         conn.executemany(
@@ -350,6 +361,7 @@ def rebuild_db(force_download: bool = False):
     conn.execute('CREATE INDEX idx_s3_objects_dataset_product ON s3_objects(dataset_id, product_id)')
     conn.execute('CREATE INDEX idx_s3_objects_saved ON s3_objects(saved_on_s3)')
     conn.execute('CREATE INDEX idx_s3_jobs_started_at ON s3_jobs(started_at DESC)')
+    conn.execute('CREATE INDEX idx_s3_job_claims_job_id ON s3_job_claims(job_id)')
     conn.commit()
 
     if preserved_config:

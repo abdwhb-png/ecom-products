@@ -10,6 +10,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, Callable
+
+import sqlite3
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -25,6 +27,7 @@ except Exception:  # pragma: no cover
 
 ACTIVE_JOB_STATUSES = {'queued', 'running', 'cancel_requested'}
 DEFAULT_HISTORY_LIMIT = 200
+UPLOAD_CLAIM_STALE_SECONDS = 5 * 60
 PARTIAL_UPLOAD_STATUS = 'partial'
 PREVIEW_ITEM_STATUS = 'preview'
 
@@ -69,23 +72,51 @@ class S3JobManager:
         history_limit: int = DEFAULT_HISTORY_LIMIT,
         load_jobs_fn: Callable[[], list[dict[str, Any]]] | None = None,
         save_jobs_fn: Callable[[list[dict[str, Any]]], None] | None = None,
+        db_connect_fn: Callable[[], Any] | None = None,
     ):
         self._jobs: dict[str, S3JobState] = {}
         self._locks: dict[str, threading.Event] = {}
+        self._claimed_upload_products: dict[tuple[str, str], str] = {}
         self._mutex = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=2)
         self._store_path = Path(store_path) if store_path else Path(__file__).resolve().parent / 's3_jobs_state.json'
         self._history_limit = max(10, int(history_limit or DEFAULT_HISTORY_LIMIT))
         self._load_jobs_fn = load_jobs_fn
         self._save_jobs_fn = save_jobs_fn
+        self._db_connect_fn = db_connect_fn
         self._load_jobs()
 
-    def list_jobs(self, job_family: str | None = None):
+    def list_jobs(self, job_family: str | None = None, *, page: int = 1, page_size: int | None = None):
         with self._mutex:
             jobs = self._sorted_jobs_unlocked()
             if job_family:
                 jobs = [job for job in jobs if job.job_family == job_family]
-            return [asdict(job) for job in jobs]
+            total = len(jobs)
+            resolved_page_size = max(1, int(page_size or total or 1))
+            resolved_page = max(1, int(page or 1))
+            start = (resolved_page - 1) * resolved_page_size
+            end = start + resolved_page_size
+            paged = jobs[start:end]
+            return {
+                'jobs': [asdict(job) for job in paged],
+                'pagination': {
+                    'page': resolved_page,
+                    'pageSize': resolved_page_size,
+                    'total': total,
+                    'totalPages': max(1, (total + resolved_page_size - 1) // resolved_page_size) if total else 1,
+                    'from': 0 if total == 0 else start + 1,
+                    'to': min(end, total),
+                },
+            }
+
+    def count_active_jobs(self, *, job_family: str | None = None, dataset_id: str | None = None) -> int:
+        with self._mutex:
+            jobs = self._jobs.values()
+            if job_family:
+                jobs = [job for job in jobs if job.job_family == job_family]
+            if dataset_id:
+                jobs = [job for job in jobs if job.dataset_id == dataset_id]
+            return sum(1 for job in jobs if job.status in ACTIVE_JOB_STATUSES)
 
     def get_job(self, job_id: str):
         with self._mutex:
@@ -125,6 +156,41 @@ class S3JobManager:
             self._persist_jobs_best_effort_unlocked()
             return asdict(job)
 
+    def reserve_upload_candidates(
+        self,
+        *,
+        job_id: str,
+        dataset_id: str,
+        collector: Callable[[set[str]], dict[str, Any]],
+        db_conn_binder: Callable[[Any | None], None] | None = None,
+    ) -> dict[str, Any]:
+        if self._db_connect_fn:
+            return self._reserve_upload_candidates_db(job_id=job_id, dataset_id=dataset_id, collector=collector, db_conn_binder=db_conn_binder)
+        with self._mutex:
+            excluded_product_ids = {
+                product_id
+                for (claimed_dataset_id, product_id), claimed_job_id in self._claimed_upload_products.items()
+                if claimed_dataset_id == dataset_id and claimed_job_id != job_id
+            }
+            collected = collector(set(excluded_product_ids))
+            resolved_dataset_id = str(collected.get('dataset_id') or dataset_id).strip() or dataset_id
+            claimed_rows = self._claim_upload_rows_unlocked(
+                job_id,
+                resolved_dataset_id,
+                list(collected.get('rows') or []),
+            )
+            claimed = dict(collected)
+            claimed['rows'] = claimed_rows
+            claimed['total'] = len(claimed_rows)
+            claimed['limit'] = max(1, len(claimed_rows) or int(claimed.get('limit') or 1))
+            return claimed
+
+    def release_job_claims(self, job_id: str) -> None:
+        if self._db_connect_fn:
+            self._release_job_claims_db(job_id)
+        with self._mutex:
+            self._release_job_claims_unlocked(job_id)
+
     def start_job(
         self,
         *,
@@ -145,31 +211,51 @@ class S3JobManager:
         dry_run: bool = False,
         job_family: str = UPLOAD_JOB_FAMILY,
     ):
+        limited_rows = rows[: max(1, int(limit))]
         with self._mutex:
-            self._create_job_unlocked(
-                job_id=job_id,
-                dataset_id=dataset_id,
-                source=source,
-                bucket=bucket,
-                prefix=prefix,
-                limit=max(1, int(limit)),
-                concurrency=max(1, int(concurrency)),
-                source_filter=source_filter,
-                selection_mode=str(selection_mode or 'pending').strip() or 'pending',
-                excluded_complete_count=max(0, int(excluded_complete_count or 0)),
-                total=min(len(rows), max(1, int(limit))),
-                job_family=job_family,
-                dry_run=dry_run,
-            )
+            claimed_rows = self._claim_upload_rows_unlocked(job_id, dataset_id, limited_rows) if job_family == UPLOAD_JOB_FAMILY else limited_rows
+            try:
+                self._create_job_unlocked(
+                    job_id=job_id,
+                    dataset_id=dataset_id,
+                    source=source,
+                    bucket=bucket,
+                    prefix=prefix,
+                    limit=max(1, int(limit)),
+                    concurrency=max(1, int(concurrency)),
+                    source_filter=source_filter,
+                    selection_mode=str(selection_mode or 'pending').strip() or 'pending',
+                    excluded_complete_count=max(0, int(excluded_complete_count or 0)),
+                    total=len(claimed_rows),
+                    job_family=job_family,
+                    dry_run=dry_run,
+                )
+            except Exception:
+                if job_family == UPLOAD_JOB_FAMILY:
+                    self._release_job_claims_unlocked(job_id)
+                raise
 
-        future = self._executor.submit(
-            self._run_job,
-            job_id,
-            rows[: max(1, int(limit))],
-            s3_client_factory,
-            resolve_source_url,
-            on_uploaded,
-        )
+        try:
+            future = self._executor.submit(
+                self._run_job,
+                job_id,
+                claimed_rows,
+                s3_client_factory,
+                resolve_source_url,
+                on_uploaded,
+            )
+        except Exception:
+            with self._mutex:
+                if job_family == UPLOAD_JOB_FAMILY:
+                    self._release_job_claims_unlocked(job_id)
+                current = self._jobs.get(job_id)
+                if current:
+                    current.status = 'failed'
+                    current.error = 'Failed to submit job to executor'
+                    current.last_message = current.error
+                    current.ended_at = time.time()
+                    self._persist_jobs_best_effort_unlocked()
+            raise
         return future
 
     def start_custom_job(
@@ -225,6 +311,143 @@ class S3JobManager:
                 event.set()
             self._persist_jobs_best_effort_unlocked()
             return True
+
+    def _claim_upload_rows_unlocked(self, job_id: str, dataset_id: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        claimed_rows: list[dict[str, Any]] = []
+        for row in rows:
+            product_id = str(row.get('id') or row.get('product_id') or row.get('goods_id') or '').strip()
+            if not product_id:
+                claimed_rows.append(row)
+                continue
+            claim_key = (dataset_id, product_id)
+            claimed_job_id = self._claimed_upload_products.get(claim_key)
+            if claimed_job_id and claimed_job_id != job_id:
+                continue
+            self._claimed_upload_products[claim_key] = job_id
+            claimed_rows.append(row)
+        return claimed_rows
+
+    def _release_job_claims_unlocked(self, job_id: str) -> None:
+        if not job_id:
+            return
+        self._claimed_upload_products = {
+            claim_key: claimed_job_id
+            for claim_key, claimed_job_id in self._claimed_upload_products.items()
+            if claimed_job_id != job_id
+        }
+
+    def _reserve_upload_candidates_db(
+        self,
+        *,
+        job_id: str,
+        dataset_id: str,
+        collector: Callable[[set[str]], dict[str, Any]],
+        db_conn_binder: Callable[[Any | None], None] | None = None,
+    ) -> dict[str, Any]:
+        attempts = 5
+        last_exc = None
+        for attempt in range(attempts):
+            conn = self._db_connect_fn()
+            try:
+                conn.execute('BEGIN IMMEDIATE')
+                self._cleanup_stale_db_claims(conn)
+                excluded_rows = conn.execute(
+                    'SELECT product_id FROM s3_job_claims WHERE dataset_id = ? AND job_id != ?',
+                    (dataset_id, job_id),
+                ).fetchall()
+                excluded_product_ids = {
+                    str(row['product_id'] if hasattr(row, 'keys') else row[0])
+                    for row in excluded_rows
+                }
+                if db_conn_binder:
+                    db_conn_binder(conn)
+                collected = collector(set(excluded_product_ids))
+                resolved_dataset_id = str(collected.get('dataset_id') or dataset_id).strip() or dataset_id
+                claimed_rows: list[dict[str, Any]] = []
+                for row in list(collected.get('rows') or []):
+                    product_id = str(row.get('id') or row.get('product_id') or row.get('goods_id') or '').strip()
+                    if not product_id:
+                        claimed_rows.append(row)
+                        continue
+                    cursor = conn.execute(
+                        '''
+                        INSERT INTO s3_job_claims (dataset_id, product_id, job_id, claimed_at)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(dataset_id, product_id) DO NOTHING
+                        ''',
+                        (resolved_dataset_id, product_id, job_id, time.time()),
+                    )
+                    if int(getattr(cursor, 'rowcount', 0) or 0) == 1:
+                        claimed_rows.append(row)
+                conn.commit()
+                claimed = dict(collected)
+                claimed['rows'] = claimed_rows
+                claimed['total'] = len(claimed_rows)
+                claimed['limit'] = max(1, len(claimed_rows) or int(claimed.get('limit') or 1))
+                return claimed
+            except sqlite3.OperationalError as exc:
+                conn.rollback()
+                last_exc = exc
+                message = str(exc).lower()
+                if 'database is locked' not in message or attempt == attempts - 1:
+                    raise
+                time.sleep(0.15 * (attempt + 1))
+            finally:
+                if db_conn_binder:
+                    try:
+                        db_conn_binder(None)
+                    except Exception:
+                        pass
+                conn.close()
+        if last_exc:
+            raise last_exc
+        raise RuntimeError('Failed to reserve upload candidates')
+
+    def _release_job_claims_db(self, job_id: str) -> None:
+        if not job_id or not self._db_connect_fn:
+            return
+        attempts = 5
+        last_exc = None
+        for attempt in range(attempts):
+            conn = self._db_connect_fn()
+            try:
+                conn.execute('DELETE FROM s3_job_claims WHERE job_id = ?', (job_id,))
+                conn.commit()
+                return
+            except sqlite3.OperationalError as exc:
+                conn.rollback()
+                last_exc = exc
+                message = str(exc).lower()
+                if 'database is locked' not in message or attempt == attempts - 1:
+                    raise
+                time.sleep(0.15 * (attempt + 1))
+            finally:
+                conn.close()
+        if last_exc:
+            raise last_exc
+
+    def _cleanup_stale_db_claims(self, conn) -> None:
+        active_job_ids = {
+            job.job_id
+            for job in self._jobs.values()
+            if job.status in ACTIVE_JOB_STATUSES
+        }
+        persisted_active_rows = conn.execute(
+            "SELECT job_id FROM s3_jobs WHERE json_extract(payload_json, '$.status') IN ('queued', 'running', 'cancel_requested')"
+        ).fetchall()
+        active_job_ids.update(
+            str(row['job_id'] if hasattr(row, 'keys') else row[0])
+            for row in persisted_active_rows
+        )
+        stale_before = time.time() - UPLOAD_CLAIM_STALE_SECONDS
+        if active_job_ids:
+            placeholders = ','.join('?' for _ in active_job_ids)
+            conn.execute(
+                f'DELETE FROM s3_job_claims WHERE claimed_at < ? AND job_id NOT IN ({placeholders})',
+                (stale_before, *tuple(active_job_ids)),
+            )
+        else:
+            conn.execute('DELETE FROM s3_job_claims WHERE claimed_at < ?', (stale_before,))
 
     def _create_job_unlocked(
         self,
@@ -339,6 +562,9 @@ class S3JobManager:
                     self._persist_jobs_best_effort_unlocked()
                     terminal_job = asdict(current)
             self._notify_terminal_job_best_effort(terminal_job)
+        finally:
+            with self._mutex:
+                self._release_job_claims_unlocked(job_id)
 
     def _run_job(self, job_id: str, rows: list[dict[str, Any]], s3_client_factory, resolve_source_url, on_uploaded):
         with self._mutex:
@@ -416,6 +642,9 @@ class S3JobManager:
                 self._persist_jobs_best_effort_unlocked()
                 terminal_job = asdict(current)
             self._notify_terminal_job_best_effort(terminal_job)
+        finally:
+            with self._mutex:
+                self._release_job_claims_unlocked(job_id)
 
     def _process_row(self, s3, job: S3JobState, row: dict[str, Any], resolve_source_url, on_uploaded):
         item = {

@@ -89,18 +89,23 @@ def main() -> int:
             manager._jobs[job.job_id] = job
 
         upload_handler = make_handler()
+        upload_handler.path = '/api/s3/upload-jobs?page=1&pageSize=20'
         server.Handler.handle_s3_family_jobs_list(upload_handler, 'upload')
         upload_payload = read_json(upload_handler)
         assert [job['job_id'] for job in upload_payload['data']] == ['upload-1'], upload_payload
         assert upload_payload['data'][0]['dry_run'] is True, upload_payload
+        assert upload_payload['pagination']['page'] == 1, upload_payload
+        assert upload_payload['pagination']['pageSize'] == 20, upload_payload
 
         migration_handler = make_handler()
+        migration_handler.path = '/api/s3/url-migration-jobs?page=1&pageSize=20'
         server.Handler.handle_s3_family_jobs_list(migration_handler, 'url_migration')
         migration_payload = read_json(migration_handler)
         assert [job['job_id'] for job in migration_payload['data']] == ['migration-1'], migration_payload
         assert migration_payload['data'][0]['job_family'] == 'url_migration', migration_payload
 
         cleanup_handler = make_handler()
+        cleanup_handler.path = '/api/s3/state-cleanup-jobs?page=1&pageSize=20'
         server.Handler.handle_s3_family_jobs_list(cleanup_handler, 'state_cleanup')
         cleanup_payload = read_json(cleanup_handler)
         assert [job['job_id'] for job in cleanup_payload['data']] == ['cleanup-1'], cleanup_payload

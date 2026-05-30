@@ -164,7 +164,7 @@ S3 / AWS notes:
 - `FAST_FASHION_ASOS_PROXY_MAX_CONCURRENCY` = optional env override for the ASOS upload concurrency cap when the proxy is enabled; defaults to `8` and is clamped to the generic upper bound `24`
 - S3/R2 config is environment-authoritative: the admin UI reads effective values from env and no longer persists bucket/prefix/endpoint/public URL overrides in SQLite
 - the S3 admin page now exposes three separated job families: uploads, URL migrations, and stale-state cleanup
-- every family follows the same lifecycle: `preview` via `dry_run=true`, `start` via `dry_run=false`, `stop`, `detail`, and `history`
+- every family follows the same lifecycle: `preview` via `dry_run=true`, `start` via `dry_run=false`, `stop`, `detail`, and paginated `history`
 - preview jobs are persisted in history with `job_family` and `dry_run=true`; they never write to S3, `s3_objects`, or JSON backup files
 - canonical protected routes are `GET/POST /api/s3/upload-jobs`, `GET/POST /api/s3/url-migration-jobs`, and `GET/POST /api/s3/state-cleanup-jobs`
 - shared detail/cancel routes stay available at `GET /api/s3/jobs/{job_id}` and `POST /api/s3/jobs/{job_id}/cancel`
@@ -179,6 +179,8 @@ Dashboard notes:
 - upload jobs accept an optional `source_filter` so `/s3` can target a specific product/resource deterministically for preview or live validation (exact product id or a case-insensitive fragment from the name / URL / source image URL)
 - upload jobs also accept `selection_mode`: `pending` (default, unsynced + partial products), `pending_only` (unsynced products only), `partial` (repair only partially synced products), or `all` (rescan everything, including already saved products)
 - upload job state now exposes `excluded_complete_count` so the UI can show how many already-complete products were skipped before the worker started
+- upload creation is now concurrency-guarded more aggressively per dataset: if an upload job is already active on the same dataset, broad untargeted launches are rejected; targeted launches are still allowed when they can claim free products without colliding with the active job
+- S3 job history lists are now paginated server-side in the admin UI at 20 jobs per page per family
 - when `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are configured, every finished S3 job sends a simple Telegram notification summarizing job id, family, dataset, final status, progress, and any excluded-complete count
 - ASOS source-image downloads now use the exact timeout plan `10/20/30` seconds with controlled retry backoff `1/3` seconds for retry-eligible `403`/timeout/network failures
 - protected S3 config/job responses now expose only safe proxy-derived state such as `proxy_enabled`, `egress_proxy_mode`, `asos_max_concurrency`, and compact per-host `download_stats`; raw proxy secrets are never exposed

@@ -1,6 +1,7 @@
 const API_TOKEN_STORAGE_KEY = 'fast-fashion-api-token';
 const ACTIVE_JOB_STATUSES = ['running', 'queued', 'cancel_requested'];
 const DETAIL_PAGE_SIZE = 50;
+const JOB_HISTORY_PAGE_SIZE = 20;
 const JOB_POLL_INTERVAL_MS = 1500;
 const PREVIEW_STATUS = 'preview';
 
@@ -112,6 +113,15 @@ const els = {
   uploadJobsList: document.getElementById('uploadJobsList'),
   migrationJobsList: document.getElementById('migrationJobsList'),
   cleanupJobsList: document.getElementById('cleanupJobsList'),
+  uploadJobsPrevBtn: document.getElementById('uploadJobsPrevBtn'),
+  uploadJobsNextBtn: document.getElementById('uploadJobsNextBtn'),
+  uploadJobsPageLabel: document.getElementById('uploadJobsPageLabel'),
+  migrationJobsPrevBtn: document.getElementById('migrationJobsPrevBtn'),
+  migrationJobsNextBtn: document.getElementById('migrationJobsNextBtn'),
+  migrationJobsPageLabel: document.getElementById('migrationJobsPageLabel'),
+  cleanupJobsPrevBtn: document.getElementById('cleanupJobsPrevBtn'),
+  cleanupJobsNextBtn: document.getElementById('cleanupJobsNextBtn'),
+  cleanupJobsPageLabel: document.getElementById('cleanupJobsPageLabel'),
   s3DatasetSelect: document.getElementById('s3DatasetSelect'),
   s3BucketInput: document.getElementById('s3BucketInput'),
   s3PrefixInput: document.getElementById('s3PrefixInput'),
@@ -160,6 +170,11 @@ const state = {
     upload: [],
     url_migration: [],
     state_cleanup: [],
+  },
+  familyJobPagination: {
+    upload: { page: 1, pageSize: JOB_HISTORY_PAGE_SIZE, total: 0, totalPages: 1, from: 0, to: 0 },
+    url_migration: { page: 1, pageSize: JOB_HISTORY_PAGE_SIZE, total: 0, totalPages: 1, from: 0, to: 0 },
+    state_cleanup: { page: 1, pageSize: JOB_HISTORY_PAGE_SIZE, total: 0, totalPages: 1, from: 0, to: 0 },
   },
   unlocked: false,
   pollTimer: null,
@@ -298,6 +313,8 @@ function bindEvents() {
   });
   els.previewUploadBtn?.addEventListener('click', () => submitFamilyJobAction('upload', true));
   els.startUploadBtn?.addEventListener('click', () => submitFamilyJobAction('upload', false));
+  els.uploadJobsPrevBtn?.addEventListener('click', () => goToFamilyJobsPage('upload', (state.familyJobPagination.upload?.page || 1) - 1));
+  els.uploadJobsNextBtn?.addEventListener('click', () => goToFamilyJobsPage('upload', (state.familyJobPagination.upload?.page || 1) + 1));
   els.s3DatasetSelect?.addEventListener('change', updateGlobalStateFromFamilies);
   els.s3SourceFilterInput?.addEventListener('change', updateGlobalStateFromFamilies);
   els.s3ConcurrencyInput?.addEventListener('change', updateGlobalStateFromFamilies);
@@ -305,9 +322,13 @@ function bindEvents() {
   els.stopUploadJobsBtn?.addEventListener('click', () => stopActiveFamilyJobs('upload'));
   els.previewMigrationBtn?.addEventListener('click', () => submitFamilyJobAction('url_migration', true));
   els.startMigrationBtn?.addEventListener('click', () => submitFamilyJobAction('url_migration', false));
+  els.migrationJobsPrevBtn?.addEventListener('click', () => goToFamilyJobsPage('url_migration', (state.familyJobPagination.url_migration?.page || 1) - 1));
+  els.migrationJobsNextBtn?.addEventListener('click', () => goToFamilyJobsPage('url_migration', (state.familyJobPagination.url_migration?.page || 1) + 1));
   els.stopMigrationJobsBtn?.addEventListener('click', () => stopActiveFamilyJobs('url_migration'));
   els.previewCleanupBtn?.addEventListener('click', () => submitFamilyJobAction('state_cleanup', true));
   els.startCleanupBtn?.addEventListener('click', () => submitFamilyJobAction('state_cleanup', false));
+  els.cleanupJobsPrevBtn?.addEventListener('click', () => goToFamilyJobsPage('state_cleanup', (state.familyJobPagination.state_cleanup?.page || 1) - 1));
+  els.cleanupJobsNextBtn?.addEventListener('click', () => goToFamilyJobsPage('state_cleanup', (state.familyJobPagination.state_cleanup?.page || 1) + 1));
   els.stopCleanupJobsBtn?.addEventListener('click', () => stopActiveFamilyJobs('state_cleanup'));
   els.refreshS3JobsBtn?.addEventListener('click', refreshAllFamilyJobs);
   els.jobModalCloseBtn?.addEventListener('click', closeJobModal);
@@ -507,9 +528,11 @@ async function refreshAllFamilyJobs() {
   if (results.some(Boolean)) updateGlobalStateFromFamilies();
 }
 
-async function refreshFamilyJobs(family, { quietAuth = false } = {}) {
+async function refreshFamilyJobs(family, { quietAuth = false, page = null } = {}) {
   const config = getFamilyConfig(family);
-  const response = await fetch(config.listEndpoint, { credentials: 'include', headers: getApiHeaders() });
+  const currentPage = Number.isInteger(page) ? page : Number(state.familyJobPagination[family]?.page || 1);
+  const historyPageSize = Number(state.familyJobPagination[family]?.pageSize || JOB_HISTORY_PAGE_SIZE);
+  const response = await fetch(`${config.listEndpoint}?page=${currentPage}&pageSize=${historyPageSize}`, { credentials: 'include', headers: getApiHeaders() });
   if (!response.ok) {
     if (response.status === 401 && !quietAuth) {
       state.unlocked = false;
@@ -522,6 +545,7 @@ async function refreshFamilyJobs(family, { quietAuth = false } = {}) {
   }
   const payload = await response.json();
   state.familyJobs[family] = payload.data || [];
+  state.familyJobPagination[family] = payload.pagination || { page: currentPage, pageSize: historyPageSize, total: state.familyJobs[family].length, totalPages: 1, from: state.familyJobs[family].length ? 1 : 0, to: state.familyJobs[family].length };
   if (payload.config) state.serverConfig = {
     bucket: payload.config?.bucket || '',
     prefix: payload.config?.prefix || '',
@@ -619,11 +643,32 @@ function bindJobCards(root) {
   });
 }
 
+function getFamilyPaginationEls(family) {
+  if (family === 'upload') return { prev: els.uploadJobsPrevBtn, next: els.uploadJobsNextBtn, label: els.uploadJobsPageLabel };
+  if (family === 'url_migration') return { prev: els.migrationJobsPrevBtn, next: els.migrationJobsNextBtn, label: els.migrationJobsPageLabel };
+  return { prev: els.cleanupJobsPrevBtn, next: els.cleanupJobsNextBtn, label: els.cleanupJobsPageLabel };
+}
+
 function renderFamilyJobList(family, jobs) {
   const config = getFamilyConfig(family);
   const root = config.getListEl();
   root.innerHTML = jobs.length ? jobs.map(renderJobCard).join('') : `<div class="s3-job-empty">${escapeHtml(config.emptyText)}</div>`;
   bindJobCards(root);
+  const pagination = state.familyJobPagination[family] || { page: 1, totalPages: 1, total: jobs.length, from: jobs.length ? 1 : 0, to: jobs.length };
+  const controls = getFamilyPaginationEls(family);
+  if (controls.label) {
+    controls.label.textContent = `Page ${pagination.page || 1}/${pagination.totalPages || 1} · ${pagination.from || 0}-${pagination.to || 0} sur ${pagination.total || 0}`;
+  }
+  if (controls.prev) controls.prev.disabled = state.isSubmitting || (pagination.page || 1) <= 1;
+  if (controls.next) controls.next.disabled = state.isSubmitting || (pagination.page || 1) >= (pagination.totalPages || 1);
+}
+
+async function goToFamilyJobsPage(family, nextPage) {
+  const pagination = state.familyJobPagination[family] || { page: 1, totalPages: 1 };
+  const resolved = Math.max(1, Math.min(nextPage, pagination.totalPages || 1));
+  if (resolved === pagination.page) return;
+  await refreshFamilyJobs(family, { page: resolved });
+  updateGlobalStateFromFamilies();
 }
 
 function updateFamilyHint(family, jobs) {
@@ -988,7 +1033,16 @@ async function submitFamilyJobAction(family, dryRun) {
       headers: getApiHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(body),
     });
-    if (!response.ok) throw new Error(`Impossible de lancer ${config.title.toLowerCase()} (${response.status})`);
+    if (!response.ok) {
+      let message = `Impossible de lancer ${config.title.toLowerCase()} (${response.status})`;
+      try {
+        const errorPayload = await response.json();
+        message = errorPayload?.error?.message || message;
+      } catch (_) {
+        // ignore body parse errors
+      }
+      throw new Error(message);
+    }
     const payload = await response.json();
     const createdJob = payload?.data || null;
     if (dryRun && createdJob) {
@@ -1021,6 +1075,10 @@ async function submitFamilyJobAction(family, dryRun) {
       await openJobDetails(createdJobId, 1, { job: createdJob });
       return;
     }
+  } catch (error) {
+    const hintEl = config.getHintEl();
+    if (hintEl) hintEl.textContent = error?.message || `Impossible de lancer ${config.title.toLowerCase()}.`;
+    throw error;
   } finally {
     setS3Busy(false, { button });
   }

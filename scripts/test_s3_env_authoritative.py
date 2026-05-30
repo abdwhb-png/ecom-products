@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -197,10 +198,14 @@ def main() -> int:
                 server.Handler.handle_s3_family_job_create(create_handler_second, 'upload')
                 second_payload = read_json(create_handler_second)
                 assert second_payload['data']['job_id'] != job['job_id'], (job, second_payload)
+                server.S3_JOB_MANAGER.release_job_claims(job['job_id'])
+                server.S3_JOB_MANAGER.release_job_claims(second_payload['data']['job_id'])
 
                 create_handler_asos = make_handler({'dataset_id': 'asos', 'limit': 1, 'concurrency': 24})
                 server.Handler.handle_s3_family_job_create(create_handler_asos, 'upload')
                 assert captured['concurrency'] == 12, captured
+
+                server.S3_JOB_MANAGER.release_job_claims('env-authoritative-test')
 
                 # Run synchronously with env config and no stale DB override.
                 future = original_start_job(
@@ -222,7 +227,16 @@ def main() -> int:
                     resolve_source_url=lambda row: ['https://example.test/image-main.jpg'],
                     on_uploaded=None,
                 )
-                future.result(timeout=10)
+                deadline = time.time() + 15
+                while time.time() < deadline:
+                    job_state = server.S3_JOB_MANAGER.get_job('env-authoritative-test')
+                    if job_state and job_state.get('status') == 'completed':
+                        break
+                    time.sleep(0.1)
+                else:
+                    raise AssertionError(server.S3_JOB_MANAGER.get_job('env-authoritative-test'))
+                if future.done():
+                    future.result(timeout=0)
                 assert any(key.startswith('env-prefix/shein/prod-1/') for key in fake_s3.objects), fake_s3.objects
             finally:
                 manager._download = original_download  # type: ignore[method-assign]

@@ -212,7 +212,17 @@ def collect_upload_candidates(payload: dict[str, Any], context: dict[str, Any]) 
     if selection_mode not in UPLOAD_SELECTION_MODES:
         raise ValueError(f'Invalid selection_mode: {selection_mode}')
 
-    conn = context['db_connect']()
+    excluded_product_ids = []
+    for value in payload.get('_excluded_product_ids') or []:
+        if value is None:
+            continue
+        cleaned = str(value).strip()
+        if cleaned:
+            excluded_product_ids.append(cleaned)
+
+    shared_conn = context.get('db_conn') if isinstance(context, dict) else None
+    owns_conn = shared_conn is None
+    conn = shared_conn or context['db_connect']()
     try:
         filter_clause = ''
         filter_params: list[Any] = []
@@ -266,6 +276,11 @@ def collect_upload_candidates(payload: dict[str, Any], context: dict[str, Any]) 
             )
             params.extend([source_filter, like_value, like_value, like_value])
 
+        if excluded_product_ids:
+            placeholders = ', '.join('?' for _ in excluded_product_ids)
+            where.append(f'CAST(p.id AS TEXT) NOT IN ({placeholders})')
+            params.extend(excluded_product_ids)
+
         rows = conn.execute(
             f'''
             SELECT p.*
@@ -279,7 +294,8 @@ def collect_upload_candidates(payload: dict[str, Any], context: dict[str, Any]) 
         ).fetchall()
         selected = [dict(row) for row in rows]
     finally:
-        conn.close()
+        if owns_conn:
+            conn.close()
 
     effective_limit = max(1, len(selected) or limit)
 

@@ -1475,6 +1475,13 @@ select[disabled] {
   flex-wrap: wrap;
 }
 
+.s3-history-pagination {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .s3-job-progress-panel {
   display: grid;
   gap: 14px;

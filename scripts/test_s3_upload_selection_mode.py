@@ -165,6 +165,7 @@ def main() -> int:
             assert pending_call['excluded_complete_count'] == 1, pending_call
             assert pending_payload['data']['selection_mode'] == 'pending', pending_payload
             assert pending_payload['data']['excluded_complete_count'] == 1, pending_payload
+            manager.release_job_claims(pending_call['job_id'])
 
             pending_only_handler = make_handler({'dataset_id': 'shein', 'limit': 10, 'concurrency': 1, 'source_filter': 'selection-mode', 'selection_mode': 'pending_only'})
             server.Handler.handle_s3_family_job_create(pending_only_handler, 'upload')
@@ -175,6 +176,7 @@ def main() -> int:
             assert pending_only_call['excluded_complete_count'] == 1, pending_only_call
             assert pending_only_payload['data']['selection_mode'] == 'pending_only', pending_only_payload
             assert pending_only_payload['data']['excluded_complete_count'] == 1, pending_only_payload
+            manager.release_job_claims(pending_only_call['job_id'])
 
             all_handler = make_handler({'dataset_id': 'shein', 'limit': 10, 'concurrency': 1, 'source_filter': 'selection-mode', 'selection_mode': 'all'})
             server.Handler.handle_s3_family_job_create(all_handler, 'upload')
@@ -185,6 +187,7 @@ def main() -> int:
             assert all_call['excluded_complete_count'] == 0, all_call
             assert all_payload['data']['selection_mode'] == 'all', all_payload
             assert all_payload['data']['excluded_complete_count'] == 0, all_payload
+            manager.release_job_claims(all_call['job_id'])
 
             partial_handler = make_handler({'dataset_id': 'shein', 'limit': 10, 'concurrency': 1, 'source_filter': 'selection-mode', 'selection_mode': 'partial'})
             server.Handler.handle_s3_family_job_create(partial_handler, 'upload')
@@ -195,6 +198,7 @@ def main() -> int:
             assert partial_call['excluded_complete_count'] == 1, partial_call
             assert partial_payload['data']['selection_mode'] == 'partial', partial_payload
             assert partial_payload['data']['excluded_complete_count'] == 1, partial_payload
+            manager.release_job_claims(partial_call['job_id'])
         finally:
             manager.start_job = original_start_job  # type: ignore[assignment]
             if previous_db_env is None:
