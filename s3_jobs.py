@@ -212,9 +212,9 @@ class S3JobManager:
         job_family: str = UPLOAD_JOB_FAMILY,
     ):
         limited_rows = rows[: max(1, int(limit))]
-        with self._mutex:
-            claimed_rows = self._claim_upload_rows_unlocked(job_id, dataset_id, limited_rows) if job_family == UPLOAD_JOB_FAMILY else limited_rows
-            try:
+        try:
+            with self._mutex:
+                claimed_rows = self._claim_upload_rows_unlocked(job_id, dataset_id, limited_rows) if job_family == UPLOAD_JOB_FAMILY else limited_rows
                 self._create_job_unlocked(
                     job_id=job_id,
                     dataset_id=dataset_id,
@@ -230,10 +230,10 @@ class S3JobManager:
                     job_family=job_family,
                     dry_run=dry_run,
                 )
-            except Exception:
-                if job_family == UPLOAD_JOB_FAMILY:
-                    self._release_job_claims_unlocked(job_id)
-                raise
+        except Exception:
+            if job_family == UPLOAD_JOB_FAMILY:
+                self.release_job_claims(job_id)
+            raise
 
         try:
             future = self._executor.submit(
@@ -246,8 +246,6 @@ class S3JobManager:
             )
         except Exception:
             with self._mutex:
-                if job_family == UPLOAD_JOB_FAMILY:
-                    self._release_job_claims_unlocked(job_id)
                 current = self._jobs.get(job_id)
                 if current:
                     current.status = 'failed'
@@ -255,6 +253,8 @@ class S3JobManager:
                     current.last_message = current.error
                     current.ended_at = time.time()
                     self._persist_jobs_best_effort_unlocked()
+            if job_family == UPLOAD_JOB_FAMILY:
+                self.release_job_claims(job_id)
             raise
         return future
 
@@ -563,8 +563,7 @@ class S3JobManager:
                     terminal_job = asdict(current)
             self._notify_terminal_job_best_effort(terminal_job)
         finally:
-            with self._mutex:
-                self._release_job_claims_unlocked(job_id)
+            self.release_job_claims(job_id)
 
     def _run_job(self, job_id: str, rows: list[dict[str, Any]], s3_client_factory, resolve_source_url, on_uploaded):
         with self._mutex:
@@ -643,8 +642,7 @@ class S3JobManager:
                 terminal_job = asdict(current)
             self._notify_terminal_job_best_effort(terminal_job)
         finally:
-            with self._mutex:
-                self._release_job_claims_unlocked(job_id)
+            self.release_job_claims(job_id)
 
     def _process_row(self, s3, job: S3JobState, row: dict[str, Any], resolve_source_url, on_uploaded):
         item = {
