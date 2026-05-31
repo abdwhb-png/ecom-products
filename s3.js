@@ -1072,7 +1072,9 @@ async function submitFamilyJobAction(family, dryRun) {
     updateGlobalStateFromFamilies();
     if (createdJobId) {
       setS3Busy(false, { button });
-      await openJobDetails(createdJobId, 1, { job: createdJob });
+      openJobDetails(createdJobId, 1, { job: createdJob }).catch((error) => {
+        console.error(error);
+      });
       return;
     }
   } catch (error) {

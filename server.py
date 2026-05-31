@@ -1322,12 +1322,15 @@ def _publicize_job_item(item: dict | None) -> dict | None:
     return out
 
 
-def _publicize_job_payload(job: dict | None) -> dict | None:
+def _publicize_job_payload(job: dict | None, *, include_items: bool = True) -> dict | None:
     if not isinstance(job, dict):
         return job
     out = dict(job)
-    if isinstance(out.get('items'), list):
-        out['items'] = [_publicize_job_item(item) for item in out.get('items')]
+    if include_items:
+        if isinstance(out.get('items'), list):
+            out['items'] = [_publicize_job_item(item) for item in out.get('items')]
+    else:
+        out.pop('items', None)
     metadata = normalize_job_metadata(
         kind=out.get('kind'),
         job_family=out.get('job_family'),
@@ -2610,7 +2613,7 @@ class Handler(SimpleHTTPRequestHandler):
         page_size = parse_positive_int((query.get('pageSize') or ['20'])[0], 20, maximum=100)
         listed = S3_JOB_MANAGER.list_jobs(job_family=job_family, page=page, page_size=page_size)
         json_response(self, {
-            'data': [_publicize_job_payload(job) for job in listed['jobs']],
+            'data': [_publicize_job_payload(job, include_items=False) for job in listed['jobs']],
             'pagination': listed['pagination'],
             'config': effective_s3_config(),
             'job_family': job_family,
@@ -2725,20 +2728,22 @@ class Handler(SimpleHTTPRequestHandler):
 
     def handle_s3_job_detail(self, job_id):
         load_s3_state(force=True)
-        job = _publicize_job_payload(S3_JOB_MANAGER.get_job(job_id))
-        if not job:
+        raw_job = S3_JOB_MANAGER.get_job(job_id)
+        if not raw_job:
             return error_response(self, f'Job not found: {job_id}', HTTPStatus.NOT_FOUND, code='not_found')
         query = parse_qs(urlparse(self.path).query)
         page = parse_positive_int((query.get('page') or ['1'])[0], 1)
         page_size = parse_positive_int((query.get('page_size') or ['12'])[0], 12, maximum=50)
-        items = list(job.get('items') or [])
-        total_items = len(items)
+        raw_items = list(raw_job.get('items') or [])
+        total_items = len(raw_items)
         start = (page - 1) * page_size
         end = start + page_size
+        paged_items = [_publicize_job_item(item) for item in raw_items[start:end]]
+        job = _publicize_job_payload(raw_job, include_items=False)
         json_response(self, {
             'data': {
                 'job': job,
-                'items': items[start:end],
+                'items': paged_items,
                 'page': page,
                 'page_size': page_size,
                 'total_items': total_items,
