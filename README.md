@@ -17,10 +17,17 @@ Small HTML/CSS/JS dashboard for browsing fast-fashion product datasets through a
 
 ## Project files
 
-- `index.html` — frontend shell
-- `styles.css` — UI styles
-- `app.js` — dashboard logic
+- `public/index.html` — frontend shell
+- `public/styles.css` — UI styles
+- `public/http-client.js` — shared authenticated fetch helper for browser clients
+- `public/dashboard-api.js` — dashboard-facing API client
+- `public/app.js` — dashboard state, rendering, and event wiring
+- `public/s3-api.js` — S3 admin API client
+- `public/s3.html` / `public/s3.js` — protected S3 admin UI and interaction wiring
+- `public/docs.html` / `public/docs.js` — served static API docs
+- `public/auth.js` — shared browser auth helper for Bearer-token pages
 - `server.py` — local API + static file server
+- `backend/*.py` — extracted backend helpers for auth, DB/runtime, HTTP responses, catalog routes, S3 routes, and shared text utilities
 - `build_catalog.py` — builds `catalog.db` from source datasets
 - `check_image_availability.py` — audits product image URLs and stores results in `image_status`
 - `screenshot.js` — optional Playwright screenshot helper
@@ -87,7 +94,7 @@ Then every API request must include:
 Authorization: Bearer change-me-to-a-long-random-secret
 ```
 
-The dashboard stores the token in browser localStorage after you enter it once, so the UI can keep calling the protected API.
+The dashboard stores the token in browser sessionStorage after you enter it once, so the UI can keep calling the protected API during the active browser session without persisting it long-term on the device.
 If `FAST_FASHION_API_TOKEN` is empty, the API stays open for local/dev usage.
 
 Important access behavior:
@@ -96,7 +103,7 @@ Important access behavior:
 - `/api/*` requires `Authorization: Bearer <token>` when `FAST_FASHION_API_TOKEN` is set, except the backward-compatible OpenAPI alias `/api/openapi.json`
 - `/openapi.json` is intentionally public for client tooling and integration
 - `/healthz` is intentionally public so Dokploy / reverse proxies can health-check the service without the API token
-- on the first protected dashboard load, the browser asks for the token and then reuses it from localStorage
+- on the first protected dashboard load, the browser asks for the token and then reuses it from sessionStorage for the current browser session
 
 ## API
 

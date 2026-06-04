@@ -5,8 +5,9 @@ from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parents[1]
-S3_JS = REPO / 's3.js'
-S3_HTML = REPO / 's3.html'
+PUBLIC = REPO / 'public'
+S3_JS = PUBLIC / 's3.js'
+S3_HTML = PUBLIC / 's3.html'
 
 
 def main() -> int:

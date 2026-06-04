@@ -5,8 +5,9 @@ from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parents[1]
-S3_HTML = REPO / 's3.html'
-S3_JS = REPO / 's3.js'
+PUBLIC = REPO / 'public'
+S3_HTML = PUBLIC / 's3.html'
+S3_JS = PUBLIC / 's3.js'
 
 
 def main() -> int:
@@ -22,7 +23,7 @@ def main() -> int:
     required_js = [
         "if (els.apiTokenInput) {\n    els.apiTokenInput.value = state.apiToken;\n  }",
         "async function unlockApiTokenForS3() {",
-        "window.localStorage.setItem(API_TOKEN_STORAGE_KEY, candidate);",
+        "state.apiToken = window.FastFashionAuth.writeToken(candidate);",
         "els.authStateLabel.textContent = 'API OK · S3 verrouillé';",
         "els.apiTokenHint.textContent = 'Token API valide. Tu peux maintenant entrer le mot de passe admin S3.';",
         "els.s3AdminPasswordGroup?.classList.remove('hidden');",

@@ -78,11 +78,21 @@ def main() -> int:
         original_db_connect = context['db_connect']
 
         class FakeConn:
-            def execute(self, *_args, **_kwargs):
+            def execute(self, query, *_args, **_kwargs):
                 class FakeResult:
+                    def __init__(self, one=None, many=None):
+                        self._one = one
+                        self._many = many or []
+
+                    def fetchone(self_inner):
+                        return self_inner._one
+
                     def fetchall(self_inner):
-                        return [{'id': '2001'}]
-                return FakeResult()
+                        return self_inner._many
+
+                if 'COUNT(*)' in query:
+                    return FakeResult(one=(0,))
+                return FakeResult(many=[{'id': '2001'}])
 
             def close(self):
                 return None
@@ -175,6 +185,8 @@ def main() -> int:
                 limit=1,
                 concurrency=1,
                 source_filter=None,
+                selection_mode='pending',
+                excluded_complete_count=0,
                 total=1,
                 job_family='upload',
                 dry_run=False,
@@ -220,6 +232,8 @@ def main() -> int:
                 limit=1,
                 concurrency=1,
                 source_filter=None,
+                selection_mode='pending',
+                excluded_complete_count=0,
                 total=1,
                 job_family='upload',
                 dry_run=False,

@@ -1,4 +1,3 @@
-const API_TOKEN_STORAGE_KEY = 'fast-fashion-api-token';
 const ACTIVE_JOB_STATUSES = ['running', 'queued', 'cancel_requested'];
 const DETAIL_PAGE_SIZE = 50;
 const JOB_HISTORY_PAGE_SIZE = 20;
@@ -233,10 +232,7 @@ function formatDuration(startedAt, endedAt) {
 }
 
 function maskToken(value) {
-  const raw = String(value || '').trim();
-  if (!raw) return '—';
-  if (raw.length <= 10) return `${raw.slice(0, 2)}***${raw.slice(-2)}`;
-  return `${raw.slice(0, 4)}***${raw.slice(-4)}`;
+  return window.FastFashionAuth.maskToken(value);
 }
 
 function refreshStoredTokenUi() {
@@ -303,9 +299,9 @@ function bindEvents() {
   });
   els.resetStoredTokenBtn?.addEventListener('click', () => {
     state.apiToken = '';
-    window.localStorage.removeItem(API_TOKEN_STORAGE_KEY);
+    window.FastFashionAuth.clearToken();
     els.apiTokenInput.value = '';
-    els.apiTokenHint.textContent = 'Token API local supprimé. Saisis-en un nouveau pour continuer.';
+    els.apiTokenHint.textContent = 'Token API de session supprimé. Saisis-en un nouveau pour continuer.';
     els.authStateLabel.textContent = 'API verrouillée';
     els.authHint.textContent = 'Le mot de passe admin S3 sera demandé après validation du token API.';
     els.s3AdminPasswordGroup?.classList.add('hidden');
@@ -353,7 +349,7 @@ function bindEvents() {
 }
 
 function hydrateApiToken() {
-  state.apiToken = (window.localStorage.getItem(API_TOKEN_STORAGE_KEY) || '').trim();
+  state.apiToken = window.FastFashionAuth.readToken();
   if (els.apiTokenInput) {
     els.apiTokenInput.value = state.apiToken;
   }
@@ -361,9 +357,7 @@ function hydrateApiToken() {
 }
 
 function getApiHeaders(extraHeaders = {}) {
-  const headers = { ...extraHeaders };
-  if (state.apiToken) headers.Authorization = `Bearer ${state.apiToken}`;
-  return headers;
+  return window.FastFashionAuth.buildHeaders(extraHeaders);
 }
 
 function isExpectedS3AuthError(error) {
@@ -440,12 +434,7 @@ async function hydrateAuthState() {
 
 async function unlockApiTokenForS3() {
   const candidate = (els.apiTokenInput?.value || '').trim();
-  state.apiToken = candidate;
-  if (candidate) {
-    window.localStorage.setItem(API_TOKEN_STORAGE_KEY, candidate);
-  } else {
-    window.localStorage.removeItem(API_TOKEN_STORAGE_KEY);
-  }
+  state.apiToken = window.FastFashionAuth.writeToken(candidate);
   refreshStoredTokenUi();
   setS3Busy(true, { button: els.unlockApiBtn, loadingText: 'Vérification…' });
   try {
@@ -509,14 +498,13 @@ async function unlockPage() {
 }
 
 async function loadDatasets() {
-  const response = await fetch('/api/datasets', { headers: getApiHeaders() });
+  const { response, datasets } = await window.FastFashionS3Api.loadDatasets();
   if (!response.ok) {
     const error = new Error(response.status === 401 ? 'Token API requis ou invalide' : 'Impossible de charger les datasets');
     if (response.status === 401) error.expectedAuth = true;
     throw error;
   }
-  const payload = await response.json();
-  state.datasets = (payload.datasets || []).filter((dataset) => ['shein', 'asos'].includes(dataset.id));
+  state.datasets = datasets;
   const options = state.datasets.map((dataset) => `<option value="${dataset.id}">${escapeHtml(dataset.label)}</option>`).join('');
   els.s3DatasetSelect.innerHTML = options;
   if (state.datasets[0]) els.s3DatasetSelect.value = state.datasets[0].id;
@@ -697,9 +685,8 @@ async function openJobDetails(jobId, page = 1, options = {}) {
   state.detailPage = page;
   openModalShell();
   if (!options.quiet) renderJobDetailsLoading(jobId, page, options.job);
-  const response = await fetch(`/api/s3/jobs/${encodeURIComponent(jobId)}?page=${page}&page_size=${state.detailPageSize}`, { credentials: 'include', headers: getApiHeaders() });
+  const { response, payload } = await window.FastFashionS3Api.fetchJobDetail(jobId, page, state.detailPageSize);
   if (!response.ok) return;
-  const payload = await response.json();
   state.selectedJobDetail = payload.data;
   renderJobDetailsModal(payload.data);
 }
@@ -994,7 +981,7 @@ function getItemNote(item, tone) {
 
 async function cancelJob(jobId) {
   if (!jobId) return;
-  await fetch(`/api/s3/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST', credentials: 'include', headers: getApiHeaders() });
+  await window.FastFashionS3Api.cancelJob(jobId);
 }
 
 async function cancelSelectedJob() {
@@ -1027,23 +1014,12 @@ async function submitFamilyJobAction(family, dryRun) {
       setS3Busy(true, { button, loadingText });
     }
     const body = { ...(config.buildCreateBody() || {}), dry_run: dryRun };
-    const response = await fetch(config.createEndpoint, {
-      method: 'POST',
-      credentials: 'include',
-      headers: getApiHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(body),
-    });
+    const { response, payload } = await window.FastFashionS3Api.createFamilyJob(config.createEndpoint, body);
     if (!response.ok) {
       let message = `Impossible de lancer ${config.title.toLowerCase()} (${response.status})`;
-      try {
-        const errorPayload = await response.json();
-        message = errorPayload?.error?.message || message;
-      } catch (_) {
-        // ignore body parse errors
-      }
+      message = payload?.error?.message || message;
       throw new Error(message);
     }
-    const payload = await response.json();
     const createdJob = payload?.data || null;
     if (dryRun && createdJob) {
       state.lastSummaryByFamily[family] = {

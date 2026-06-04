@@ -5,8 +5,9 @@ from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parents[1]
-S3_HTML = REPO / 's3.html'
-S3_JS = REPO / 's3.js'
+PUBLIC = REPO / 'public'
+S3_HTML = PUBLIC / 's3.html'
+S3_JS = PUBLIC / 's3.js'
 
 
 def main() -> int:
@@ -27,7 +28,7 @@ def main() -> int:
         "els.storedApiTokenLabel.textContent = `Token stocké détecté (${maskToken(state.apiToken)})`;",
         "els.useStoredTokenBtn?.addEventListener('click', () => {",
         "els.resetStoredTokenBtn?.addEventListener('click', () => {",
-        'window.localStorage.removeItem(API_TOKEN_STORAGE_KEY);',
+        'window.FastFashionAuth.clearToken();',
     ]
 
     missing_html = [snippet for snippet in required_html if snippet not in html]

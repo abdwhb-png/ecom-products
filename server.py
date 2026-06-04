@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import math
 import os
-import signal
 import socket
 import sqlite3
 import time
@@ -17,8 +14,47 @@ from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
-import unicodedata
 
+from backend import catalog_routes, s3_routes
+from backend.auth import (
+    API_BEARER_TOKEN,
+    S3_ADMIN_PASSWORD,
+    S3_AUTH_TOKENS,
+    S3_AUTH_TTL_SECONDS,
+    api_token_is_valid,
+    api_unauthorized_response,
+    auth_required,
+    get_bearer_token,
+    handle_s3_auth as auth_handle_s3_auth,
+    issue_s3_token,
+    s3_access_is_valid,
+    s3_admin_required_response,
+    token_is_valid,
+)
+from backend.http_utils import error_response, html_response, json_response
+from backend.public_assets import DOCS_PATH, PUBLIC_DIR, S3_PAGE_PATH
+from backend.runtime_db import db_connect as db_connect_impl, health_status as health_status_impl
+from backend.security import (
+    CORS_HEADERS,
+    MAX_REQUEST_BODY_BYTES,
+    SECURITY_HEADERS,
+    reject_directory_listing,
+)
+from backend.text_utils import (
+    get_base_url,
+    infer_top_category,
+    make_slug,
+    normalize_goods_id,
+    normalize_search_text as _normalize_search_text,
+    parse_bool,
+    parse_json_list,
+    parse_positive_int,
+    safe_url,
+    split_sizes,
+    sql_unaccent as _sql_unaccent,
+    strip_accents as _strip_accents,
+    to_money,
+)
 from dataset_service import load_dotenv
 import network_proxy
 from s3_job_operations import (
@@ -35,8 +71,6 @@ from scripts.migrate_aws_public_urls import apply_changes as migrate_apply_chang
 
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv('FAST_FASHION_DB_PATH', str(ROOT / 'catalog.db')))
-DOCS_PATH = ROOT / 'docs.html'
-S3_PAGE_PATH = ROOT / 's3.html'
 S3_STATE_PATH = ROOT / 's3_state.json'
 S3_JOBS_STATE_PATH = ROOT / 's3_jobs_state.json'
 ALLOWED_DATASETS = {'shein', 'asos'}
@@ -55,21 +89,6 @@ ALLOWED_SORTS = {
     'reviews-desc': 'p.reviews_count DESC NULLS LAST, p.id ASC',
     'name-asc': 'p.name COLLATE NOCASE ASC, p.id ASC',
 }
-
-CORS_HEADERS = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
-    'Access-Control-Max-Age': '86400',
-    'X-Content-Type-Options': 'nosniff',
-    'Referrer-Policy': 'no-referrer',
-    'X-Frame-Options': 'DENY',
-}
-API_BEARER_TOKEN = os.getenv('FAST_FASHION_API_TOKEN', '').strip()
-S3_ADMIN_PASSWORD = os.getenv('FAST_FASHION_S3_ADMIN_PASSWORD', '').strip()
-S3_AUTH_TOKENS: dict[str, float] = {}
-S3_AUTH_TTL_SECONDS = 60 * 60
-
 
 def _env_nonempty(*names: str) -> str:
     for name in names:
@@ -1620,341 +1639,16 @@ def save_s3_state(conn=None):
 
 
 def db_connect():
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute('PRAGMA busy_timeout = 30000')
-    # Register an SQL-accessible normalization function for accent- and case-insensitive comparisons
-    try:
-        conn.create_function('unaccent', 1, _sql_unaccent)
-    except Exception:
-        # create_function may fail in some environments; continue without it (fallback will still work but without accent folding)
-        pass
-    conn.execute(
-        '''
-        CREATE TABLE IF NOT EXISTS image_status (
-            dataset_id TEXT NOT NULL,
-            product_id TEXT NOT NULL,
-            image_url TEXT,
-            ok INTEGER NOT NULL,
-            status_code INTEGER,
-            content_type TEXT,
-            checked_at REAL NOT NULL,
-            PRIMARY KEY (dataset_id, product_id)
-        )
-        '''
+    return db_connect_impl(
+        DB_PATH,
+        sql_unaccent_fn=_sql_unaccent,
+        migrate_legacy_state=_maybe_migrate_legacy_s3_state,
+        migrate_legacy_jobs=_maybe_migrate_legacy_s3_jobs,
     )
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_image_status_dataset_ok ON image_status(dataset_id, ok)')
-    conn.execute(
-        '''
-        CREATE TABLE IF NOT EXISTS s3_config (
-            config_key TEXT PRIMARY KEY,
-            config_value TEXT NOT NULL,
-            updated_at REAL NOT NULL
-        )
-        '''
-    )
-    conn.execute(
-        '''
-        CREATE TABLE IF NOT EXISTS s3_objects (
-            goods_id TEXT PRIMARY KEY,
-            dataset_id TEXT NOT NULL,
-            product_id TEXT NOT NULL,
-            source_url TEXT,
-            s3_url TEXT,
-            bucket TEXT,
-            object_key TEXT,
-            source_image_urls_json TEXT NOT NULL DEFAULT '[]',
-            s3_image_urls_json TEXT NOT NULL DEFAULT '[]',
-            image_pairs_json TEXT NOT NULL DEFAULT '[]',
-            source_image_count INTEGER NOT NULL DEFAULT 0,
-            s3_image_count INTEGER NOT NULL DEFAULT 0,
-            failed_image_count INTEGER NOT NULL DEFAULT 0,
-            saved_on_s3 INTEGER NOT NULL DEFAULT 0,
-            saved_at REAL,
-            updated_at REAL NOT NULL
-        )
-        '''
-    )
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_s3_objects_dataset_product ON s3_objects(dataset_id, product_id)')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_s3_objects_saved ON s3_objects(saved_on_s3)')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_s3_objects_dataset_saved_product ON s3_objects(dataset_id, saved_on_s3, product_id)')
-    conn.execute(
-        '''
-        CREATE TABLE IF NOT EXISTS s3_jobs (
-            job_id TEXT PRIMARY KEY,
-            payload_json TEXT NOT NULL,
-            started_at REAL,
-            updated_at REAL NOT NULL
-        )
-        '''
-    )
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_s3_jobs_started_at ON s3_jobs(started_at DESC)')
-    conn.execute(
-        '''
-        CREATE TABLE IF NOT EXISTS s3_job_claims (
-            dataset_id TEXT NOT NULL,
-            product_id TEXT NOT NULL,
-            job_id TEXT NOT NULL,
-            claimed_at REAL NOT NULL,
-            PRIMARY KEY (dataset_id, product_id)
-        )
-        '''
-    )
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_s3_job_claims_job_id ON s3_job_claims(job_id)')
-    _maybe_migrate_legacy_s3_state(conn)
-    _maybe_migrate_legacy_s3_jobs(conn)
-    conn.commit()
-    return conn
 
 
 def health_status():
-    status = {
-        'ok': False,
-        'db_path': str(DB_PATH),
-        'db_exists': DB_PATH.exists(),
-        'datasets_count': 0,
-    }
-    if not status['db_exists']:
-        return status
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        try:
-            row = conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='datasets'").fetchone()
-            has_datasets_table = bool(row and row[0])
-            status['has_datasets_table'] = has_datasets_table
-            if not has_datasets_table:
-                return status
-            count_row = conn.execute('SELECT COUNT(*) FROM datasets').fetchone()
-            status['datasets_count'] = int(count_row[0] or 0) if count_row else 0
-            status['ok'] = status['datasets_count'] > 0
-            return status
-        finally:
-            conn.close()
-    except Exception as exc:
-        status['error'] = str(exc)
-        return status
-
-
-def json_response(handler, payload, status=HTTPStatus.OK, extra_headers=None):
-    body = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
-    handler.send_response(status)
-    handler.send_header('Content-Type', 'application/json; charset=utf-8')
-    handler.send_header('Content-Length', str(len(body)))
-    handler.send_header('Cache-Control', 'no-store')
-    for key, value in CORS_HEADERS.items():
-        handler.send_header(key, value)
-    for key, value in (extra_headers or {}).items():
-        handler.send_header(key, value)
-    handler.end_headers()
-    handler.wfile.write(body)
-
-
-def html_response(handler, content: bytes, status=HTTPStatus.OK):
-    handler.send_response(status)
-    handler.send_header('Content-Type', 'text/html; charset=utf-8')
-    handler.send_header('Content-Length', str(len(content)))
-    handler.send_header('Cache-Control', 'no-store')
-    for key, value in CORS_HEADERS.items():
-        handler.send_header(key, value)
-    handler.end_headers()
-    handler.wfile.write(content)
-
-
-def error_response(handler, message, status=HTTPStatus.BAD_REQUEST, code='bad_request', extra_headers=None):
-    json_response(handler, {'error': {'code': code, 'message': message}}, status=status, extra_headers=extra_headers)
-
-
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode('utf-8')).hexdigest()
-
-
-def issue_s3_token() -> str:
-    raw = f'{os.getpid()}:{time.time()}:{os.urandom(24).hex()}'
-    token = hashlib.sha256(raw.encode('utf-8')).hexdigest()
-    S3_AUTH_TOKENS[token] = time.time() + S3_AUTH_TTL_SECONDS
-    return token
-
-
-def token_is_valid(token: str | None) -> bool:
-    if not token:
-        return False
-    expiry = S3_AUTH_TOKENS.get(token)
-    if not expiry:
-        return False
-    if expiry < time.time():
-        S3_AUTH_TOKENS.pop(token, None)
-        return False
-    return True
-
-
-def auth_required(handler) -> bool:
-    cookie = handler.headers.get('Cookie', '') or ''
-    token = None
-    for chunk in cookie.split(';'):
-        chunk = chunk.strip()
-        if chunk.startswith('ff_s3_auth='):
-            token = chunk.split('=', 1)[1]
-            break
-    if token_is_valid(token):
-        return True
-    return False
-
-
-def get_bearer_token(handler) -> str:
-    header = (handler.headers.get('Authorization', '') or '').strip()
-    if not header:
-        return ''
-    scheme, _, token = header.partition(' ')
-    if scheme.lower() != 'bearer':
-        return ''
-    return token.strip()
-
-
-def api_token_is_valid(handler) -> bool:
-    if not API_BEARER_TOKEN:
-        return True
-    token = get_bearer_token(handler)
-    if not token:
-        return False
-    return hmac.compare_digest(token, API_BEARER_TOKEN)
-
-
-def api_unauthorized_response(handler):
-    return error_response(
-        handler,
-        'Authorization token required',
-        HTTPStatus.UNAUTHORIZED,
-        code='unauthorized',
-        extra_headers={
-            'WWW-Authenticate': 'Bearer realm="fast-fashion-dashboard"',
-            'X-Fast-Fashion-Auth-Required': 'true',
-        },
-    )
-
-
-def s3_access_is_valid(handler) -> bool:
-    return auth_required(handler)
-
-
-def s3_admin_required_response(handler):
-    return error_response(
-        handler,
-        'S3 admin authentication required',
-        HTTPStatus.UNAUTHORIZED,
-        code='s3_admin_auth_required',
-    )
-
-
-def parse_positive_int(value, default, minimum=1, maximum=None):
-    try:
-        parsed = int(str(value).strip())
-    except Exception:
-        parsed = default
-    parsed = max(minimum, parsed)
-    if maximum is not None:
-        parsed = min(maximum, parsed)
-    return parsed
-
-
-def parse_bool(value):
-    return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
-
-
-def to_money(value, default='0.00'):
-    try:
-        if value is None or value == '':
-            return default
-        return f'{float(value):.2f}'
-    except Exception:
-        return default
-
-
-def _strip_accents(value: str) -> str:
-    """Return the input string with Unicode accents/diacritics removed (NFKD)."""
-    if value is None:
-        return ''
-    normalized = unicodedata.normalize('NFKD', str(value))
-    return ''.join(ch for ch in normalized if not unicodedata.combining(ch))
-
-
-def _normalize_search_text(value: str) -> str:
-    """Normalize text for accent-insensitive, case-insensitive comparisons.
-
-    Steps: coerce to str, NFKD normalize and strip combining marks, lowercase, strip whitespace.
-    """
-    if value is None:
-        return ''
-    return _strip_accents(str(value)).lower().strip()
-
-
-def _sql_unaccent(value):
-    # SQLite will call this with None for NULL values; return empty string in that case
-    try:
-        return _normalize_search_text(value or '')
-    except Exception:
-        return ''
-
-
-def make_slug(value):
-    # Produce a stable slug that strips accents and normalizes to ASCII-like characters
-    text = _strip_accents((value or '').strip()).lower()
-    text = ''.join(ch if ch.isalnum() else '-' for ch in text)
-    while '--' in text:
-        text = text.replace('--', '-')
-    return text.strip('-') or 'uncategorized'
-
-
-def split_sizes(value):
-    if not value:
-        return []
-    return [part.strip() for part in str(value).split(',') if part.strip()]
-
-
-def parse_json_list(raw):
-    if not raw:
-        return []
-    try:
-        value = json.loads(raw)
-        return value if isinstance(value, list) else []
-    except Exception:
-        return []
-
-
-def get_base_url(handler):
-    host = handler.headers.get('Host')
-    if not host:
-        return ''
-    scheme = 'https' if handler.headers.get('X-Forwarded-Proto', '').lower() == 'https' else 'http'
-    return f'{scheme}://{host}'
-
-
-def safe_url(base_url, path):
-    return f'{base_url}{path}' if base_url else path
-
-
-def infer_top_category(category):
-    if not category:
-        return None
-    lowered = category.lower()
-    mapping = {
-        'Dresses': ['dress', 'gown'],
-        'Skirts': ['skirt'],
-        'Shorts': ['shorts'],
-        'Jeans': ['jean'],
-        'Pants': ['pants', 'trouser', 'legging', 'jogger'],
-        'Swimwear': ['swim', 'bikini', 'swimsuit'],
-        'Lingerie': ['bra', 'panty', 'lingerie', 'sleepwear'],
-        'Tops': ['top', 'tee', 'shirt', 'blouse', 'tank'],
-        'Outerwear': ['jacket', 'coat', 'hoodie', 'sweatshirt', 'blazer', 'cardigan'],
-        'Shoes': ['shoe', 'sneaker', 'heel', 'boot', 'sandal'],
-        'Bags': ['bag', 'backpack', 'purse', 'wallet'],
-        'Accessories': ['accessory', 'belt', 'hat', 'scarf', 'cap'],
-        'Home': ['home', 'decor', 'furniture', 'kitchen', 'bathroom'],
-    }
-    for label, needles in mapping.items():
-        if any(needle in lowered for needle in needles):
-            return label
-    return category.split(' / ')[0].split(' > ')[0].strip() or None
+    return health_status_impl(DB_PATH)
 
 
 def iter_server_pids():
@@ -2060,7 +1754,7 @@ S3_JOB_MANAGER = S3JobManager(load_jobs_fn=_load_s3_jobs_from_db, save_jobs_fn=_
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         self._sent_cache_control = False
-        super().__init__(*args, directory=str(ROOT), **kwargs)
+        super().__init__(*args, directory=str(PUBLIC_DIR), **kwargs)
 
     def send_header(self, keyword, value):
         if str(keyword).lower() == 'cache-control':
@@ -2070,8 +1764,13 @@ class Handler(SimpleHTTPRequestHandler):
     def end_headers(self):
         if not self._sent_cache_control:
             super().send_header('Cache-Control', 'no-store')
+        for key, value in SECURITY_HEADERS.items():
+            super().send_header(key, value)
         self._sent_cache_control = False
         super().end_headers()
+
+    def list_directory(self, path):
+        return reject_directory_listing(self)
 
     def do_OPTIONS(self):
         self.send_response(HTTPStatus.NO_CONTENT)
@@ -2083,6 +1782,8 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         try:
+            if parsed.path == '/':
+                return html_response(self, (PUBLIC_DIR / 'index.html').read_bytes())
             if parsed.path == '/healthz':
                 status = health_status()
                 return json_response(self, {'data': status}, status=HTTPStatus.OK if status.get('ok') else HTTPStatus.SERVICE_UNAVAILABLE)
@@ -2184,525 +1885,91 @@ class Handler(SimpleHTTPRequestHandler):
             return error_response(self, f'Internal server error: {exc}', HTTPStatus.INTERNAL_SERVER_ERROR, code='internal_error')
 
     def _read_json_body(self):
-        length = int(self.headers.get('Content-Length') or '0')
+        try:
+            length = int(self.headers.get('Content-Length') or '0')
+        except ValueError as exc:
+            raise ValueError('Invalid Content-Length header') from exc
         if length <= 0:
             return {}
+        if length > MAX_REQUEST_BODY_BYTES:
+            raise ValueError(f'Request body too large (max {MAX_REQUEST_BODY_BYTES} bytes)')
         raw = self.rfile.read(length)
         if not raw:
             return {}
         return json.loads(raw.decode('utf-8'))
 
-    def _dataset_row(self, conn, dataset_id):
-        row = conn.execute('SELECT * FROM datasets WHERE id = ?', (dataset_id,)).fetchone()
-        if not row:
-            raise ValueError(f'Dataset not found: {dataset_id}')
-        return row
-
-    def _category_rows(self, conn, dataset_id, search: str | None = None, saved_on_s3_only: bool = False):
-        sql = '''
-            SELECT
-                p.category AS name,
-                COUNT(*) AS count,
-                MAX(CASE WHEN p.image <> '' THEN p.image ELSE NULL END) AS source_image_url,
-                MAX(CASE WHEN p.url <> '' THEN p.url ELSE NULL END) AS source_url,
-                MAX(CASE WHEN o.saved_on_s3 = 1 AND COALESCE(o.s3_url, '') <> '' THEN o.s3_url ELSE NULL END) AS s3_image_url,
-                MAX(CASE WHEN o.saved_on_s3 = 1 THEN 1 ELSE 0 END) AS saved_on_s3,
-                COUNT(DISTINCT CASE WHEN o.saved_on_s3 = 1 THEN p.id ELSE NULL END) AS saved_products_count,
-                COALESCE(SUM(CASE WHEN o.saved_on_s3 = 1 THEN COALESCE(o.s3_image_count, 0) ELSE 0 END), 0) AS s3_image_count
-            FROM products p
-            LEFT JOIN s3_objects o ON o.dataset_id = p.dataset_id AND o.product_id = p.id
-            WHERE p.dataset_id = ? AND COALESCE(p.category, '') <> ''
-        '''
-        params = [dataset_id]
-        if search:
-            # Use the SQL-accessible unaccent() function and normalized parameter to make
-            # category searches both case-insensitive and accent-insensitive.
-            sql += " AND (unaccent(p.category) LIKE ? OR unaccent(p.category_path) LIKE ?)"
-            ns = _normalize_search_text(search)
-            params.extend([f'%{ns}%', f'%{ns}%'])
-        sql += '\n            GROUP BY p.category\n        '
-        if saved_on_s3_only:
-            sql += '\n            HAVING COUNT(DISTINCT CASE WHEN o.saved_on_s3 = 1 THEN p.id ELSE NULL END) > 0\n            '
-        sql += '\n            ORDER BY count DESC, p.category COLLATE NOCASE ASC\n            '
-        return conn.execute(sql, params).fetchall()
-
-    def _category_resource(self, row):
-        name = (row['name'] or '').strip()
-        source_image_url = row['source_image_url'] or None
-        s3_image_url = row['s3_image_url'] or None
-        return {
-            'name': name,
-            'slug': make_slug(name),
-            'top_category_name': infer_top_category(name),
-            'source_url': row['source_url'] or None,
-            'image_url': s3_image_url or source_image_url,
-            'source_image_url': source_image_url,
-            's3_image_url': s3_image_url,
-            'saved_on_s3': bool(row['saved_on_s3']),
-            'saved_products_count': int(row['saved_products_count'] or 0),
-            's3_image_count': int(row['s3_image_count'] or 0),
-        }
-
-    def _s3_object_for(self, conn, dataset_id, product_id):
-        goods_id = normalize_goods_id(dataset_id, product_id)
-        row = conn.execute(
-            '''
-            SELECT goods_id, dataset_id, product_id, source_url, s3_url, bucket, object_key,
-                   source_image_urls_json, s3_image_urls_json, image_pairs_json,
-                   source_image_count, s3_image_count, failed_image_count, saved_on_s3, saved_at
-            FROM s3_objects
-            WHERE goods_id = ?
-            ''',
-            (goods_id,),
-        ).fetchone()
-        if not row:
-            return None
-        return {
-            'goods_id': row['goods_id'],
-            'dataset_id': row['dataset_id'],
-            'product_id': row['product_id'],
-            'source_url': row['source_url'],
-            's3_url': row['s3_url'],
-            'bucket': row['bucket'],
-            'key': row['object_key'],
-            'source_image_urls': parse_json_list(row['source_image_urls_json']),
-            's3_image_urls': parse_json_list(row['s3_image_urls_json']),
-            'image_pairs': parse_json_list(row['image_pairs_json']),
-            'source_image_count': int(row['source_image_count'] or 0),
-            's3_image_count': int(row['s3_image_count'] or 0),
-            'failed_image_count': int(row['failed_image_count'] or 0),
-            'saved_on_s3': bool(row['saved_on_s3']),
-            'saved_at': float(row['saved_at'] or 0),
-        }
-
-    def _source_images_for_row(self, row):
-        urls = []
-        for value in [row['image']] + parse_json_list(row['image_urls_json']):
-            if not isinstance(value, str):
-                continue
-            cleaned = value.strip()
-            if not cleaned or not cleaned.lower().startswith(('http://', 'https://')):
-                continue
-            urls.append(cleaned)
-        return list(dict.fromkeys(urls))[:20]
-
-    def _s3_images_for_product(self, s3_object, source_images):
-        if not s3_object:
-            return [], []
-        image_pairs = []
-        raw_pairs = s3_object.get('image_pairs') or []
-        if isinstance(raw_pairs, list):
-            for pair in raw_pairs:
-                if not isinstance(pair, dict):
-                    continue
-                source_url = str(pair.get('source_url') or '').strip()
-                s3_url = str(pair.get('s3_url') or '').strip()
-                if not source_url or not s3_url:
-                    continue
-                image_pairs.append({
-                    'source_url': source_url,
-                    's3_url': s3_url,
-                    'key': pair.get('key'),
-                    'status': pair.get('status'),
-                })
-        if not image_pairs:
-            source_url = str(s3_object.get('source_url') or '').strip()
-            s3_url = str(s3_object.get('s3_url') or '').strip()
-            if source_url and s3_url:
-                image_pairs = [{
-                    'source_url': source_url,
-                    's3_url': s3_url,
-                    'key': s3_object.get('key'),
-                    'status': 'uploaded',
-                }]
-        by_source = {pair['source_url']: pair for pair in image_pairs}
-        ordered_pairs = [by_source[url] for url in source_images if url in by_source]
-        if not ordered_pairs and image_pairs:
-            ordered_pairs = image_pairs
-        s3_urls = [pair['s3_url'] for pair in ordered_pairs if pair.get('s3_url')]
-        return ordered_pairs, s3_urls
-
-    def _product_resource(self, row, dataset_row, base_url, conn=None):
-        product_id = str(row['id']).strip()
-        goods_id = normalize_goods_id(dataset_row['id'], product_id)
-        name = (row['name'] or '').strip() or 'Sans nom'
-        description = (row['description'] or '').strip() or 'Imported from scraper feed.'
-        image_urls = self._source_images_for_row(row)
-        category_name = (row['category'] or '').strip() or None
-        category_slug = make_slug(category_name) if category_name else None
-        category_url = safe_url(base_url, f'/api/categories/{quote(category_slug)}?dataset={dataset_row["id"]}') if category_slug else None
-        category_tree = []
-        if category_name:
-            top = infer_top_category(category_name)
-            if top and top != category_name:
-                category_tree.append({'name': top, 'url': category_url})
-            category_tree.append({'name': category_name, 'url': category_url})
-        owns_conn = conn is None
-        conn = conn or db_connect()
-        try:
-            s3_object = self._s3_object_for(conn, dataset_row['id'], product_id)
-        finally:
-            if owns_conn:
-                conn.close()
-        image_pairs, s3_image_urls = self._s3_images_for_product(s3_object, image_urls)
-        saved_on_s3 = bool(s3_object and s3_object.get('saved_on_s3'))
-        s3_image_count = int((s3_object or {}).get('s3_image_count') or len(s3_image_urls))
-        images = s3_image_urls if saved_on_s3 and s3_image_urls else image_urls
-        primary_image = images[0] if images else None
-        return {
-            'goods_id': goods_id,
-            'goods_sn': product_id,
-            'spu': product_id,
-            'category_id': None,
-            'name': name,
-            'brand': (row['brand'] or None) if row['brand'] else None,
-            'color': (row['color'] or None) if row['color'] else None,
-            'size': (row['size_text'] or None) if row['size_text'] else None,
-            'description': description,
-            'retail_price': to_money(row['price']),
-            'sale_price': to_money(row['price']),
-            'currency': 'USD',
-            'in_stock': bool(images),
-            'stock_quantity': 1 if images else 0,
-            'images': [primary_image, *[u for u in images if u != primary_image]] if primary_image else images,
-            'category_url': category_url,
-            'product_url': row['url'] or None,
-            'category_tree': category_tree or None,
-            'country_code': 'US',
-            'domain': urlparse(row['url']).netloc or None if row['url'] else None,
-            'image_count': len(image_urls),
-            'offers': row['price_text'] or None,
-            'attributes': [
-                {'name': 'brand', 'value': (row['brand'] or None) if row['brand'] else None},
-                {'name': 'color', 'value': (row['color'] or None) if row['color'] else None},
-                {'name': 'size', 'value': (row['size_text'] or None) if row['size_text'] else None},
-                {'name': 'source', 'value': row['source']},
-                {'name': 'dataset_id', 'value': dataset_row['id']},
-            ],
-            'root_category': infer_top_category(category_name) if category_name else None,
-            'related_products': None,
-            'top_reviews': None,
-            'store_name': dataset_row['label'],
-            'rating': to_money(row['rating'], default='0.00'),
-            'reviews_count': int(row['reviews_count'] or 0),
-            'is_free_shipping': bool(images),
-            'available_sizes': parse_json_list(row['sizes_json']) or split_sizes(row['size_text']) or None,
-            'category_details': {
-                'category_id': row['category'] or None,
-                'goods_id': goods_id,
-                'level': 1 if category_name else None,
-                'name': category_name,
-                'url': category_url,
-            },
-            'discount_price': to_money(row['price']),
-            'discount_price_usd': to_money(row['price']),
-            'colors': [(row['color'] or None)] if row['color'] else None,
-            'store_details': {
-                'code': dataset_row['id'],
-                'followers': None,
-                'items': None,
-                'name': dataset_row['label'],
-            },
-            'shipping_details': None,
-            'shipping_type': None,
-            'tags': [t for t in [dataset_row['label'], row['source'], category_name, row['brand'], row['color']] if t],
-            'model_data': None,
-            'source_image_urls': image_urls,
-            's3_image_urls': s3_image_urls,
-            'image_pairs': image_pairs,
-            'saved_on_s3': saved_on_s3,
-            's3_url': s3_image_urls[0] if s3_image_urls else None,
-            's3_image_count': s3_image_count,
-        }
-
-    def _legacy_product_payload(self, row, dataset_row, base_url, resource_product=None):
-        product = resource_product or self._product_resource(row, dataset_row, base_url)
-        legacy = dict(row)
-        legacy['sizes'] = parse_json_list(legacy.pop('sizes_json') or '[]')
-        legacy['imageUrls'] = product['source_image_urls']
-        legacy['sourceImageUrls'] = product['source_image_urls']
-        legacy['s3ImageUrls'] = product['s3_image_urls']
-        legacy['imagePairs'] = product['image_pairs']
-        legacy['image_ok'] = bool(legacy.get('image_ok'))
-        legacy['goods_id'] = product['goods_id']
-        legacy['saved_on_s3'] = product['saved_on_s3']
-        legacy['s3_url'] = product['s3_url']
-        legacy['s3_image_count'] = product['s3_image_count']
-        return legacy
-
     def handle_datasets(self, query_string):
-        params = parse_qs(query_string)
-        dataset_id = (params.get('dataset', [''])[0] or '').strip().lower()
-        conn = db_connect()
-        if dataset_id:
-            rows = conn.execute('SELECT * FROM datasets WHERE id = ?', (dataset_id,)).fetchall()
-        else:
-            rows = conn.execute('SELECT * FROM datasets ORDER BY id').fetchall()
-        conn.close()
-        json_response(self, {'datasets': [dict(row) for row in rows]})
+        return catalog_routes.handle_datasets(self, query_string, db_connect_fn=db_connect)
 
     def handle_categories(self, query_string):
-        params = parse_qs(query_string)
-        dataset_id = (params.get('dataset', ['shein'])[0] or 'shein').strip().lower()
-        if dataset_id not in ALLOWED_DATASETS:
-            raise ValueError(f'Unknown dataset: {dataset_id}')
-        page = parse_positive_int(params.get('page', ['1'])[0], 1)
-        page_size = parse_positive_int(params.get('pageSize', ['100'])[0], 100, maximum=MAX_PAGE_SIZE)
-        search = (params.get('search', [''])[0] or '').strip()
-        saved_on_s3_only = parse_bool(params.get('savedOnS3', ['false'])[0])
-        conn = db_connect()
-        dataset_row = self._dataset_row(conn, dataset_id)
-        rows = self._category_rows(conn, dataset_id, search, saved_on_s3_only=saved_on_s3_only)
-        conn.close()
-        total = len(rows)
-        total_pages = max(1, math.ceil(total / page_size))
-        page = min(page, total_pages)
-        start = (page - 1) * page_size
-        end = start + page_size
-        base_url = get_base_url(self)
-        data = [self._category_resource(row) | {'count': row['count']} for row in rows[start:end]]
-        json_response(self, {'dataset': dict(dataset_row), 'data': data, 'pagination': {'page': page, 'pageSize': page_size, 'total': total, 'totalPages': total_pages, 'from': 0 if total == 0 else start + 1, 'to': min(end, total)}})
+        return catalog_routes.handle_categories(
+            self,
+            query_string,
+            db_connect_fn=db_connect,
+            allowed_datasets=ALLOWED_DATASETS,
+            max_page_size=MAX_PAGE_SIZE,
+        )
 
     def handle_category(self, slug, query_string):
-        params = parse_qs(query_string)
-        dataset_id = (params.get('dataset', ['shein'])[0] or 'shein').strip().lower()
-        if dataset_id not in ALLOWED_DATASETS:
-            raise ValueError(f'Unknown dataset: {dataset_id}')
-        saved_on_s3_only = parse_bool(params.get('savedOnS3', ['false'])[0])
-        conn = db_connect()
-        dataset_row = self._dataset_row(conn, dataset_id)
-        rows = self._category_rows(conn, dataset_id, saved_on_s3_only=saved_on_s3_only)
-        conn.close()
-        target = None
-        for row in rows:
-            resource = self._category_resource(row)
-            if resource['slug'] == slug:
-                target = resource | {'count': row['count']}
-                break
-        if not target:
-            return error_response(self, f'Category not found: {slug}', HTTPStatus.NOT_FOUND, code='not_found')
-        json_response(self, {'dataset': dict(dataset_row), 'data': target})
+        return catalog_routes.handle_category(
+            self,
+            slug,
+            query_string,
+            db_connect_fn=db_connect,
+            allowed_datasets=ALLOWED_DATASETS,
+        )
 
     def handle_products(self, query_string):
-        params = parse_qs(query_string)
-        dataset_id = (params.get('dataset', ['shein'])[0] or 'shein').strip().lower()
-        if dataset_id not in ALLOWED_DATASETS:
-            raise ValueError(f'Unknown dataset: {dataset_id}')
-        search = (params.get('search', [''])[0] or '').strip().lower()
-        category = (params.get('category', [''])[0] or '').strip()
-        sort = (params.get('sort', ['relevance'])[0] or 'relevance').strip()
-        images_only = parse_bool(params.get('imagesOnly', ['false'])[0])
-        saved_on_s3_only = parse_bool(params.get('savedOnS3', ['false'])[0])
-        page = parse_positive_int(params.get('page', ['1'])[0], 1)
-        page_size = parse_positive_int(params.get('pageSize', [str(DEFAULT_PAGE_SIZE)])[0], DEFAULT_PAGE_SIZE, maximum=MAX_PAGE_SIZE)
-        format_mode = (params.get('format', ['legacy'])[0] or 'legacy').strip().lower()
-        if format_mode not in {'legacy', 'resource'}:
-            raise ValueError('format must be legacy or resource')
-
-        where = ['p.dataset_id = ?']
-        values = [dataset_id]
-        if search:
-            where.append('p.search_text LIKE ?')
-            values.append(f'%{search}%')
-        if category:
-            # Match categories using normalized comparison (strip accents + lowercase)
-            where.append('(unaccent(p.category) LIKE ? OR unaccent(p.category_path) LIKE ?)')
-            nc = _normalize_search_text(category)
-            values.extend([f'%{nc}%', f'%{nc}%'])
-        if images_only:
-            where.append("p.image <> ''")
-        if saved_on_s3_only:
-            where.append("EXISTS (SELECT 1 FROM s3_objects o WHERE o.dataset_id = p.dataset_id AND o.product_id = p.id AND o.saved_on_s3 = 1)")
-        where_sql = ' AND '.join(where)
-        order_sql = ALLOWED_SORTS.get(sort, ALLOWED_SORTS['relevance'])
-        conn = db_connect()
-        dataset_row = self._dataset_row(conn, dataset_id)
-        total = conn.execute(f'SELECT COUNT(*) FROM products p WHERE {where_sql}', values).fetchone()[0]
-        total_pages = max(1, math.ceil(total / page_size))
-        page = min(page, total_pages)
-        offset = (page - 1) * page_size
-        product_rows = conn.execute(
-            f'''
-            SELECT p.*, COALESCE(s.ok, 0) AS image_ok
-            FROM products p
-            LEFT JOIN image_status s ON s.dataset_id = p.dataset_id AND s.product_id = p.id
-            WHERE {where_sql}
-            ORDER BY {order_sql}
-            LIMIT ? OFFSET ?
-            ''',
-            [*values, page_size, offset],
-        ).fetchall()
-        base_url = get_base_url(self)
-        resource_products = [self._product_resource(row, dataset_row, base_url, conn) for row in product_rows]
-        conn.close()
-
-        if format_mode == 'resource':
-            json_response(self, {'dataset': dict(dataset_row), 'data': resource_products, 'pagination': {'page': page, 'pageSize': page_size, 'total': total, 'totalPages': total_pages, 'from': 0 if total == 0 else offset + 1, 'to': min(offset + page_size, total)}})
-            return
-
-        legacy_products = [self._legacy_product_payload(row, dataset_row, base_url, product) for row, product in zip(product_rows, resource_products)]
-
-        json_response(self, {'dataset': dict(dataset_row), 'products': legacy_products, 'pagination': {'page': page, 'pageSize': page_size, 'total': total, 'totalPages': total_pages, 'from': 0 if total == 0 else offset + 1, 'to': min(offset + page_size, total)}})
+        return catalog_routes.handle_products(
+            self,
+            query_string,
+            db_connect_fn=db_connect,
+            allowed_datasets=ALLOWED_DATASETS,
+            default_page_size=DEFAULT_PAGE_SIZE,
+            max_page_size=MAX_PAGE_SIZE,
+            allowed_sorts=ALLOWED_SORTS,
+        )
 
     def handle_product(self, goods_id, query_string):
-        params = parse_qs(query_string)
-        dataset_id = (params.get('dataset', ['shein'])[0] or 'shein').strip().lower()
-        if dataset_id not in ALLOWED_DATASETS:
-            raise ValueError(f'Unknown dataset: {dataset_id}')
-        requested_id = unquote(str(goods_id or '')).strip()
-        product_id = requested_id.split(':', 1)[1] if ':' in requested_id else requested_id
-        conn = db_connect()
-        dataset_row = self._dataset_row(conn, dataset_id)
-        row = conn.execute('SELECT * FROM products WHERE dataset_id = ? AND id = ?', (dataset_id, product_id)).fetchone()
-        if not row:
-            conn.close()
-            return error_response(self, f'Product not found: {goods_id}', HTTPStatus.NOT_FOUND, code='not_found')
-        base_url = get_base_url(self)
-        product_resource = self._product_resource(row, dataset_row, base_url, conn)
-        product_display = self._legacy_product_payload(row, dataset_row, base_url, product_resource)
-        conn.close()
-        json_response(self, {
-            'dataset': dict(dataset_row),
-            'display': product_display,
-            'api': product_resource,
-            'data': product_resource,
-        })
+        return catalog_routes.handle_product(
+            self,
+            goods_id,
+            query_string,
+            db_connect_fn=db_connect,
+            allowed_datasets=ALLOWED_DATASETS,
+        )
 
     def handle_s3_auth(self):
-        payload = self._read_json_body()
-        if not S3_ADMIN_PASSWORD:
-            token = issue_s3_token()
-            body = json.dumps({'data': {'authenticated': True, 'expires_in_seconds': S3_AUTH_TTL_SECONDS}}, ensure_ascii=False).encode('utf-8')
-            self.send_response(HTTPStatus.OK)
-            self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.send_header('Set-Cookie', f'ff_s3_auth={token}; Max-Age={S3_AUTH_TTL_SECONDS}; Path=/; HttpOnly; SameSite=Strict')
-            self.send_header('Content-Length', str(len(body)))
-            for key, value in CORS_HEADERS.items():
-                self.send_header(key, value)
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        password = str(payload.get('password') or '')
-        if not hmac.compare_digest(hash_password(password), hash_password(S3_ADMIN_PASSWORD)):
-            return error_response(self, 'Invalid S3 admin password', HTTPStatus.UNAUTHORIZED, code='unauthorized')
-        token = issue_s3_token()
-        body = json.dumps({'data': {'authenticated': True, 'expires_in_seconds': S3_AUTH_TTL_SECONDS}}, ensure_ascii=False).encode('utf-8')
-        self.send_response(HTTPStatus.OK)
-        self.send_header('Content-Type', 'application/json; charset=utf-8')
-        self.send_header('Set-Cookie', f'ff_s3_auth={token}; Max-Age={S3_AUTH_TTL_SECONDS}; Path=/; HttpOnly; SameSite=Strict')
-        self.send_header('Content-Length', str(len(body)))
-        for key, value in CORS_HEADERS.items():
-            self.send_header(key, value)
-        self.end_headers()
-        self.wfile.write(body)
+        return auth_handle_s3_auth(self, self._read_json_body)
 
     def handle_s3_config_get(self):
-        json_response(self, {'data': effective_s3_config()})
-
-    def _s3_job_definition(self, job_family: str):
-        definition = JOB_DEFINITIONS.get(job_family)
-        if not definition:
-            raise ValueError(f'Unknown S3 job family: {job_family}')
-        return definition
+        return s3_routes.handle_s3_config_get(self, effective_s3_config_fn=effective_s3_config)
 
     def handle_s3_family_jobs_list(self, job_family: str):
-        self._s3_job_definition(job_family)
-        load_s3_state(force=True)
-        query = parse_qs(urlparse(self.path).query)
-        page = parse_positive_int((query.get('page') or ['1'])[0], 1)
-        page_size = parse_positive_int((query.get('pageSize') or ['20'])[0], 20, maximum=100)
-        listed = S3_JOB_MANAGER.list_jobs(job_family=job_family, page=page, page_size=page_size)
-        json_response(self, {
-            'data': [_publicize_job_payload(job, include_items=False) for job in listed['jobs']],
-            'pagination': listed['pagination'],
-            'config': effective_s3_config(),
-            'job_family': job_family,
-            'family': self._s3_job_definition(job_family).api_meta(),
-        })
+        return s3_routes.handle_s3_family_jobs_list(
+            self,
+            job_family,
+            manager=S3_JOB_MANAGER,
+            load_s3_state_fn=load_s3_state,
+            effective_s3_config_fn=effective_s3_config,
+            publicize_job_payload=_publicize_job_payload,
+        )
 
     def handle_s3_family_summary(self, job_family: str):
-        definition = self._s3_job_definition(job_family)
-        if not definition.summary_builder:
-            raise ValueError(f'No summary endpoint available for {job_family}')
-        payload = self._read_json_body() if self.headers.get('Content-Length') else {}
-        context = make_s3_job_context()
-        collected = definition.collector(payload, context)
-        json_response(self, {
-            'data': definition.summary_builder(collected, context),
-            'job_family': job_family,
-            'family': definition.api_meta(),
-        })
+        return s3_routes.handle_s3_family_summary(
+            self,
+            job_family,
+            make_context_fn=make_s3_job_context,
+        )
 
     def handle_s3_family_job_create(self, job_family: str):
-        definition = self._s3_job_definition(job_family)
-        payload = self._read_json_body() if self.headers.get('Content-Length') else {}
-        dry_run = parse_bool(payload.get('dry_run', payload.get('preview', False)))
-        context = make_s3_job_context()
-        initial_collected = definition.collector(payload, context)
-        dataset_id = str(initial_collected.get('dataset_id') or '').strip()
-        job_id = build_job_id(job_family, dataset_id if dataset_id and dataset_id != 'all' else None)
-        if job_family == UPLOAD_JOB_FAMILY:
-            active_same_dataset = S3_JOB_MANAGER.count_active_jobs(job_family=UPLOAD_JOB_FAMILY, dataset_id=dataset_id)
-            selection_mode = str(payload.get('selection_mode') or 'pending').strip().lower() or 'pending'
-            claim_db_conn = None
-
-            def _bind_claim_conn(conn):
-                nonlocal claim_db_conn, context
-                claim_db_conn = conn
-                context = make_s3_job_context(db_conn=conn)
-
-            def _collect_unclaimed(excluded_product_ids: set[str]) -> dict[str, Any]:
-                next_payload = dict(payload)
-                if excluded_product_ids:
-                    next_payload['_excluded_product_ids'] = sorted(excluded_product_ids)
-                return definition.collector(next_payload, context)
-
-            collected = S3_JOB_MANAGER.reserve_upload_candidates(
-                job_id=job_id,
-                dataset_id=dataset_id,
-                collector=_collect_unclaimed,
-                db_conn_binder=_bind_claim_conn,
-            )
-            if not collected.get('rows'):
-                if active_same_dataset > 0:
-                    return error_response(
-                        self,
-                        f"Aucun produit libre pour lancer un nouvel upload {dataset_id} maintenant. Un autre job actif a déjà réservé les candidats disponibles.",
-                        HTTPStatus.CONFLICT,
-                        code='s3_upload_no_free_products',
-                    )
-                if selection_mode != 'all':
-                    return error_response(
-                        self,
-                        f"Aucun produit candidat disponible pour {dataset_id} avec selection_mode={selection_mode}.",
-                        HTTPStatus.CONFLICT,
-                        code='s3_upload_no_candidates',
-                    )
-        else:
-            collected = initial_collected
-        run_spec = definition.runner_builder(job_id, dry_run, collected, context)
-        start_mode = run_spec.get('mode')
-        kwargs = dict(run_spec.get('kwargs') or {})
-        try:
-            if start_mode == 'start_job':
-                future = S3_JOB_MANAGER.start_job(**kwargs)
-            elif start_mode == 'start_custom_job':
-                initial_patch = dict(run_spec.get('initial_job_patch') or {})
-                future = S3_JOB_MANAGER.start_custom_job(**kwargs)
-                if initial_patch:
-                    S3_JOB_MANAGER.update_job(job_id, **initial_patch)
-            else:
-                raise ValueError(f'Unsupported S3 job runner mode: {start_mode}')
-        except Exception:
-            if job_family == UPLOAD_JOB_FAMILY:
-                S3_JOB_MANAGER.release_job_claims(job_id)
-            raise
-        json_response(self, {
-            'data': _publicize_job_payload(S3_JOB_MANAGER.get_job(job_id)),
-            'future': bool(future),
-            'job_family': job_family,
-            'family': definition.api_meta(),
-        }, status=HTTPStatus.ACCEPTED)
+        return s3_routes.handle_s3_family_job_create(
+            self,
+            job_family,
+            manager=S3_JOB_MANAGER,
+            make_context_fn=make_s3_job_context,
+            publicize_job_payload=_publicize_job_payload,
+        )
 
     def handle_s3_jobs_list(self):
         return self.handle_s3_family_jobs_list(UPLOAD_JOB_FAMILY)
@@ -2717,39 +1984,22 @@ class Handler(SimpleHTTPRequestHandler):
         return self.handle_s3_family_summary(STATE_CLEANUP_JOB_FAMILY)
 
     def handle_s3_job_cancel(self, job_id):
-        job = S3_JOB_MANAGER.get_job(job_id)
-        if not job:
-            return error_response(self, f'Job not found: {job_id}', HTTPStatus.NOT_FOUND, code='not_found')
-        if job.get('status') not in ACTIVE_JOB_STATUSES:
-            return error_response(self, f'Job is not active: {job_id}', HTTPStatus.BAD_REQUEST, code='invalid_request')
-        if not S3_JOB_MANAGER.cancel_job(job_id):
-            return error_response(self, f'Job not found: {job_id}', HTTPStatus.NOT_FOUND, code='not_found')
-        json_response(self, {'data': _publicize_job_payload(S3_JOB_MANAGER.get_job(job_id))}, status=HTTPStatus.ACCEPTED)
+        return s3_routes.handle_s3_job_cancel(
+            self,
+            job_id,
+            manager=S3_JOB_MANAGER,
+            publicize_job_payload=_publicize_job_payload,
+        )
 
     def handle_s3_job_detail(self, job_id):
-        load_s3_state(force=True)
-        raw_job = S3_JOB_MANAGER.get_job(job_id)
-        if not raw_job:
-            return error_response(self, f'Job not found: {job_id}', HTTPStatus.NOT_FOUND, code='not_found')
-        query = parse_qs(urlparse(self.path).query)
-        page = parse_positive_int((query.get('page') or ['1'])[0], 1)
-        page_size = parse_positive_int((query.get('page_size') or ['12'])[0], 12, maximum=50)
-        raw_items = list(raw_job.get('items') or [])
-        total_items = len(raw_items)
-        start = (page - 1) * page_size
-        end = start + page_size
-        paged_items = [_publicize_job_item(item) for item in raw_items[start:end]]
-        job = _publicize_job_payload(raw_job, include_items=False)
-        json_response(self, {
-            'data': {
-                'job': job,
-                'items': paged_items,
-                'page': page,
-                'page_size': page_size,
-                'total_items': total_items,
-                'total_pages': max(1, math.ceil(total_items / page_size)) if total_items else 1,
-            }
-        })
+        return s3_routes.handle_s3_job_detail(
+            self,
+            job_id,
+            manager=S3_JOB_MANAGER,
+            load_s3_state_fn=load_s3_state,
+            publicize_job_item=_publicize_job_item,
+            publicize_job_payload=_publicize_job_payload,
+        )
 
 
 def find_available_port(host: str, preferred_port: int, attempts: int = 20) -> int:

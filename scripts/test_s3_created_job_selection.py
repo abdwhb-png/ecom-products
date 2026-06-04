@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parents[1]
-S3_JS = REPO / 's3.js'
+S3_JS = REPO / 'public' / 's3.js'
 
 
 def main() -> int:
@@ -19,7 +19,7 @@ def main() -> int:
         "state.activeFamily = family;",
         "openModalShell();",
         "renderJobDetailsLoading(createdJobId, 1, createdJob);",
-        "await openJobDetails(createdJobId, 1, { job: createdJob });",
+        "openJobDetails(createdJobId, 1, { job: createdJob }).catch((error) => {",
     ]
     missing = [snippet for snippet in required if snippet not in text]
     assert not missing, missing

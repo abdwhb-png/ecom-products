@@ -1,6 +1,4 @@
 const query = new URLSearchParams(window.location.search);
-const API_TOKEN_STORAGE_KEY = 'fast-fashion-api-token';
-
 const state = {
   apiToken: '',
   apiUnlocked: false,
@@ -204,19 +202,14 @@ function bindEvents() {
 }
 
 function hydrateApiToken() {
-  const stored = window.localStorage.getItem(API_TOKEN_STORAGE_KEY) || '';
-  state.apiToken = stored.trim();
+  state.apiToken = window.FastFashionAuth.readToken();
   if (els.apiTokenInput) {
     els.apiTokenInput.value = state.apiToken;
   }
 }
 
 function getApiHeaders(extraHeaders = {}) {
-  const headers = { ...extraHeaders };
-  if (state.apiToken) {
-    headers.Authorization = `Bearer ${state.apiToken}`;
-  }
-  return headers;
+  return window.FastFashionAuth.buildHeaders(extraHeaders);
 }
 
 function isExpectedAuthError(error) {
@@ -264,12 +257,7 @@ function setDashboardBusy(isBusy, { button = null, loadingText = 'Chargement…'
 
 async function unlockApi() {
   const candidate = (els.apiTokenInput?.value || '').trim();
-  state.apiToken = candidate;
-  if (candidate) {
-    window.localStorage.setItem(API_TOKEN_STORAGE_KEY, candidate);
-  } else {
-    window.localStorage.removeItem(API_TOKEN_STORAGE_KEY);
-  }
+  state.apiToken = window.FastFashionAuth.writeToken(candidate);
   setDashboardBusy(true, { button: els.unlockApiBtn, loadingText: 'Vérification…' });
   try {
     await loadDatasets();
@@ -283,7 +271,7 @@ async function loadDatasets() {
   updateStatus('Chargement des datasets…', 'info');
   els.datasetLoader.classList.remove('hidden');
   try {
-    const response = await fetch('/api/datasets', { headers: getApiHeaders() });
+    const { response, datasets } = await window.FastFashionDashboardApi.loadDatasets();
     if (response.status === 401) {
       setApiLocked('Token invalide ou manquant.');
       const error = new Error('Autorisation requise');
@@ -291,8 +279,7 @@ async function loadDatasets() {
       throw error;
     }
     if (!response.ok) throw new Error(`Impossible de charger les datasets (${response.status})`);
-    const payload = await response.json();
-    state.datasets = (payload.datasets || []).filter((dataset) => ['shein', 'asos'].includes(dataset.id));
+    state.datasets = datasets;
     if (!state.datasets.find((dataset) => dataset.id === state.currentDataset) && state.datasets.length) {
       state.currentDataset = state.datasets[0].id;
     }
@@ -352,7 +339,7 @@ async function refreshUI(options = {}) {
 }
 
 async function fetchProducts() {
-  const params = new URLSearchParams({
+  const { response, payload } = await window.FastFashionDashboardApi.fetchProducts({
     dataset: state.currentDataset,
     search: state.search,
     category: state.category,
@@ -362,8 +349,6 @@ async function fetchProducts() {
     page: String(state.page),
     pageSize: String(state.pageSize),
   });
-
-  const response = await fetch(`/api/products?${params.toString()}`, { headers: getApiHeaders() });
   if (response.status === 401) {
     setApiLocked('Token invalide ou manquant.');
     const error = new Error('Autorisation requise');
@@ -371,20 +356,18 @@ async function fetchProducts() {
     throw error;
   }
   if (!response.ok) throw new Error(`Impossible de charger les produits (${response.status})`);
-  const payload = await response.json();
   state.page = payload.pagination?.page || 1;
   return payload;
 }
 
 async function fetchCategories() {
-  const params = new URLSearchParams({
+  const { response, payload } = await window.FastFashionDashboardApi.fetchCategories({
     dataset: state.currentDataset,
     search: state.search,
     savedOnS3: String(state.savedOnS3),
     page: String(state.categoryPage),
     pageSize: String(state.categoryPageSize),
   });
-  const response = await fetch(`/api/categories?${params.toString()}`, { headers: getApiHeaders() });
   if (response.status === 401) {
     setApiLocked('Token invalide ou manquant.');
     const error = new Error('Autorisation requise');
@@ -392,7 +375,7 @@ async function fetchCategories() {
     throw error;
   }
   if (!response.ok) throw new Error(`Impossible de charger les catégories (${response.status})`);
-  return response.json();
+  return payload;
 }
 
 function render(payload, categories = [], categoryPagination = null) {
@@ -623,13 +606,12 @@ async function fetchProductDetail(product) {
   if (state.productDetailCache[cacheKey]) {
     return { cacheKey, payload: state.productDetailCache[cacheKey] };
   }
-  const response = await fetch(`/api/products/${encodeURIComponent(productId)}?dataset=${encodeURIComponent(datasetId)}`, { headers: getApiHeaders() });
+  const { response, payload } = await window.FastFashionDashboardApi.fetchProductDetail({ datasetId, productId });
   if (response.status === 401) {
     setApiLocked('Token invalide ou manquant.');
     throw new Error('Autorisation requise');
   }
   if (!response.ok) throw new Error(`Impossible de charger le détail produit (${response.status})`);
-  const payload = await response.json();
   state.productDetailCache[cacheKey] = payload;
   return { cacheKey, payload };
 }

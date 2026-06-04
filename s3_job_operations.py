@@ -360,6 +360,12 @@ def collect_url_migration_changes(payload: dict[str, Any], context: dict[str, An
     public_url = str(context['resolve_aws_public_url']() or '').strip()
     if not public_url:
         raise ValueError('Missing AWS_URL')
+    conn = context['db_connect']()
+    try:
+        conn.row_factory = sqlite3.Row
+        changes = migrate_collect_changes(conn, public_url)
+    finally:
+        conn.close()
     return {
         'dataset_id': 'all',
         'source': 'migration',
@@ -367,7 +373,8 @@ def collect_url_migration_changes(payload: dict[str, Any], context: dict[str, An
         'sample_limit': sample_limit,
         'bucket': str(context['resolve_aws_bucket']() or '').strip() or None,
         'prefix': str(context['resolve_aws_prefix']() or '').strip(),
-        'total': 0,
+        'changes': changes,
+        'total': len(changes),
     }
 
 
@@ -443,8 +450,9 @@ def build_url_migration_runner(job_id: str, dry_run: bool, collected: dict[str, 
 
 def summarize_url_migration(collected: dict[str, Any], _context: dict[str, Any]) -> dict[str, Any]:
     sample_limit = collected['sample_limit']
+    changes = list(collected.get('changes') or [])
     return {
-        'total': len(collected['changes']),
+        'total': len(changes),
         'sample_limit': sample_limit,
         'public_url': collected['public_url'],
         'sample': [
@@ -454,7 +462,7 @@ def summarize_url_migration(collected: dict[str, Any], _context: dict[str, Any])
                 'new_s3_url': change['new_s3_url'],
                 'changed_fields': change['changed_fields'],
             }
-            for change in collected['changes'][:sample_limit]
+            for change in changes[:sample_limit]
         ],
     }
 
@@ -462,13 +470,20 @@ def summarize_url_migration(collected: dict[str, Any], _context: dict[str, Any])
 def collect_state_cleanup_changes(payload: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     sample_limit = parse_positive_int(payload.get('sample_limit', 25), 25, maximum=200)
     bucket = str(context['resolve_aws_bucket']() or '').strip()
+    conn = context['db_connect']()
+    try:
+        conn.row_factory = sqlite3.Row
+        changes = s3_cleanup_collect(conn, bucket=bucket)
+    finally:
+        conn.close()
     return {
         'dataset_id': 'all',
         'source': 'cleanup',
         'sample_limit': sample_limit,
         'bucket': bucket or None,
         'prefix': str(context['resolve_aws_prefix']() or '').strip(),
-        'total': 0,
+        'changes': changes,
+        'total': len(changes),
     }
 
 
@@ -546,8 +561,9 @@ def build_state_cleanup_runner(job_id: str, dry_run: bool, collected: dict[str, 
 
 def summarize_state_cleanup(collected: dict[str, Any], _context: dict[str, Any]) -> dict[str, Any]:
     sample_limit = collected['sample_limit']
+    changes = list(collected.get('changes') or [])
     return {
-        'total': len(collected['changes']),
+        'total': len(changes),
         'sample_limit': sample_limit,
         'current_bucket': collected['bucket'],
         'sample': [
@@ -558,7 +574,7 @@ def summarize_state_cleanup(collected: dict[str, Any], _context: dict[str, Any])
                 's3_url': change['s3_url'],
                 'reason': change['reason'],
             }
-            for change in collected['changes'][:sample_limit]
+            for change in changes[:sample_limit]
         ],
     }
 
