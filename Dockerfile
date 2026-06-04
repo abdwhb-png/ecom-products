@@ -20,8 +20,6 @@ RUN mkdir -p /app/runtime /app/data/downloads \
     && chown -R appuser:appuser /app \
     && chmod +x /app/scripts/container-entrypoint.sh
 
-USER appuser
-
 EXPOSE 8765
 
 ENTRYPOINT ["/app/scripts/container-entrypoint.sh"]
